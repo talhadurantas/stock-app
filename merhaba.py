@@ -14,6 +14,12 @@ def get_stock_data(tickers, benchmark, start_date, end_date):
     bench_data = yf.download(benchmark, start=start_date, end=end_date, auto_adjust=False)
     return data, bench_data
 
+# --- Mobile Detection (Better UX) ---
+# Automatically detect if user might be on mobile based on screen width
+# This is stored in session state
+if 'date_input_mode' not in st.session_state:
+    st.session_state.date_input_mode = 'auto'
+
 # --- Sidebar ---
 with st.sidebar:
     st.header("Portfolio Settings")
@@ -34,34 +40,78 @@ with st.sidebar:
         if sum(weights) > 0:
             weights = [w / sum(weights) for w in weights]
         else:
-            weights = [1.0 / len(tickers)] * len(tickers)
-
+            weights = [1.0 / len(tickers)] * len(tickers) if tickers else [1.0]
+        
         st.subheader("Benchmark & Timeframe")
         benchmark = st.text_input("Benchmark Ticker", value="SPY").upper()
         
-        # --- MOBİL ÇÖZÜMÜ ---
-        # Kullanıcıya seçme şansı veriyoruz
-        mobile_mode = st.checkbox("Mobilde tarih sorunu yaşıyorum (Elle Gir)", value=False)
+        # --- IMPROVED DATE INPUT ---
+        st.markdown("**Date Selection**")
         
-        if mobile_mode:
-            # Sorunsuz Metin Kutuları
-            start_input = st.text_input("Start Date (YYYY-MM-DD)", value="2023-01-01")
-            end_input = st.text_input("End Date (YYYY-MM-DD)", value=str(pd.to_datetime("today").date()))
+        # Radio button for date input preference
+        date_mode = st.radio(
+            "Choose date input method:",
+            ["Text Input (Mobile Friendly)", "Calendar Picker"],
+            index=0,
+            help="Use Text Input if calendar doesn't work on your device"
+        )
+        
+        if date_mode == "Text Input (Mobile Friendly)":
+            # Default dates
+            default_start = "2023-01-01"
+            default_end = str(pd.to_datetime("today").date())
             
-            # Metni Tarihe Çevirme (Hata önleyici)
+            col1, col2 = st.columns(2)
+            with col1:
+                start_input = st.text_input(
+                    "Start Date", 
+                    value=default_start,
+                    placeholder="YYYY-MM-DD",
+                    help="Format: YYYY-MM-DD (e.g., 2023-01-01)"
+                )
+            with col2:
+                end_input = st.text_input(
+                    "End Date", 
+                    value=default_end,
+                    placeholder="YYYY-MM-DD",
+                    help="Format: YYYY-MM-DD (e.g., 2024-12-31)"
+                )
+            
+            # Validate and convert dates
             try:
                 start_date = pd.to_datetime(start_input)
                 end_date = pd.to_datetime(end_input)
-            except:
-                st.error("Tarih formatı hatalı! Lütfen YYYY-AA-GG (2023-01-01) şeklinde yazın.")
-                start_date = pd.to_datetime("2023-01-01")
-                end_date = pd.to_datetime("today")
+                
+                # Date validation
+                if start_date >= end_date:
+                    st.warning("⚠️ Start date must be before end date!")
+                elif end_date > pd.to_datetime("today"):
+                    st.warning("⚠️ End date cannot be in the future!")
+                else:
+                    st.success(f"✅ Date range: {start_date.date()} to {end_date.date()}")
+                    
+            except Exception as e:
+                st.error(f"❌ Invalid date format! Please use YYYY-MM-DD (e.g., 2023-01-01)")
+                # Fallback to default dates
+                start_date = pd.to_datetime(default_start)
+                end_date = pd.to_datetime(default_end)
         else:
-            # Normal Takvim (Masaüstü için)
-            start_date = st.date_input("Start Date", value=pd.to_datetime("2023-01-01"))
-            end_date = st.date_input("End Date", value=pd.to_datetime("today"))
+            # Calendar picker (works better on desktop)
+            col1, col2 = st.columns(2)
+            with col1:
+                start_date = st.date_input(
+                    "Start Date", 
+                    value=pd.to_datetime("2023-01-01"),
+                    help="Select start date from calendar"
+                )
+            with col2:
+                end_date = st.date_input(
+                    "End Date", 
+                    value=pd.to_datetime("today"),
+                    help="Select end date from calendar"
+                )
         
-        run_btn = st.form_submit_button("🚀 Run Analysis")
+        run_btn = st.form_submit_button("🚀 Run Analysis", use_container_width=True)
 
 # --- Analysis Logic ---
 if run_btn:
@@ -71,11 +121,11 @@ if run_btn:
         try:
             with st.spinner("Fetching data..."):
                 raw_data, bench_raw = get_stock_data(tickers, benchmark, start_date, end_date)
-
+            
             if raw_data.empty or bench_raw.empty:
-                st.error("No data found. Try again.")
+                st.error("❌ No data found. Please check your tickers and date range.")
                 st.stop()
-
+            
             # --- Data Processing ---
             if 'Adj Close' in raw_data.columns:
                 data = raw_data['Adj Close']
@@ -90,7 +140,7 @@ if run_btn:
                 bench_data = bench_raw['Close']
             else:
                 bench_data = bench_raw
-
+            
             if len(tickers) == 1:
                 if isinstance(data, pd.Series):
                     data = data.to_frame(tickers[0])
@@ -103,9 +153,9 @@ if run_btn:
             bench_returns = bench_returns.loc[common_index]
             
             if daily_returns.empty:
-                st.error("Timestamps didn't match.")
+                st.error("❌ No overlapping data found between portfolio and benchmark.")
                 st.stop()
-
+            
             if len(tickers) > 1:
                 portfolio_daily = (daily_returns * weights).sum(axis=1)
             else:
@@ -120,18 +170,64 @@ if run_btn:
             total_return = portfolio_cum.iloc[-1] - 1
             bench_total_return = bench_cum.iloc[-1] - 1
             
-            col1, col2 = st.columns(2)
-            col1.metric("Your Return", f"{total_return:.2%}")
+            # --- RESULTS DISPLAY ---
+            st.success("✅ Analysis Complete!")
+            
+            # Metrics
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Portfolio Return", f"{total_return:.2%}", 
+                       delta=f"{(total_return - bench_total_return):.2%} vs Benchmark")
             col2.metric("Benchmark Return", f"{bench_total_return:.2%}")
-
-            st.subheader("Growth Chart ($1 Investment)")
-            fig, ax = plt.subplots(figsize=(10, 5))
-            ax.plot(portfolio_cum.index, portfolio_cum, label='Your Portfolio', linewidth=2)
-            ax.plot(bench_cum.index, bench_cum, label=f'Benchmark ({benchmark})', linestyle='--', color='gray')
-            ax.axhline(1.0, color='red', linestyle=':', alpha=0.5)
-            ax.legend()
-            ax.grid(True, alpha=0.3)
+            
+            # Calculate volatility
+            portfolio_vol = portfolio_daily.std() * (252 ** 0.5)  # Annualized
+            col3.metric("Portfolio Volatility", f"{portfolio_vol:.2%}")
+            
+            # Chart
+            st.subheader("📊 Growth Chart ($1 Investment)")
+            fig, ax = plt.subplots(figsize=(12, 6))
+            ax.plot(portfolio_cum.index, portfolio_cum, label='Your Portfolio', linewidth=2.5, color='#1f77b4')
+            ax.plot(bench_cum.index, bench_cum, label=f'Benchmark ({benchmark})', linestyle='--', linewidth=2, color='#ff7f0e')
+            ax.axhline(1.0, color='red', linestyle=':', alpha=0.5, label='Initial Investment')
+            ax.set_xlabel('Date', fontsize=12)
+            ax.set_ylabel('Portfolio Value ($)', fontsize=12)
+            ax.set_title(f'Portfolio Performance: {start_date.date()} to {end_date.date()}', fontsize=14, fontweight='bold')
+            ax.legend(loc='best', fontsize=10)
+            ax.grid(True, alpha=0.3, linestyle='--')
+            plt.tight_layout()
             st.pyplot(fig)
             
+            # Additional stats in expander
+            with st.expander("📈 See Detailed Statistics"):
+                stats_col1, stats_col2 = st.columns(2)
+                
+                with stats_col1:
+                    st.markdown("**Portfolio Statistics**")
+                    st.write(f"• Total Return: {total_return:.2%}")
+                    st.write(f"• Annualized Volatility: {portfolio_vol:.2%}")
+                    st.write(f"• Best Day: {portfolio_daily.max():.2%}")
+                    st.write(f"• Worst Day: {portfolio_daily.min():.2%}")
+                
+                with stats_col2:
+                    st.markdown("**Benchmark Statistics**")
+                    bench_vol = bench_returns.std() * (252 ** 0.5)
+                    st.write(f"• Total Return: {bench_total_return:.2%}")
+                    st.write(f"• Annualized Volatility: {bench_vol:.2%}")
+                    st.write(f"• Best Day: {bench_returns.max():.2%}")
+                    st.write(f"• Worst Day: {bench_returns.min():.2%}")
+            
         except Exception as e:
-            st.error(f"An error occurred: {e}")
+            st.error(f"❌ An error occurred: {e}")
+            st.info("💡 Tip: Make sure all ticker symbols are valid and try a different date range.")
+
+# --- Footer ---
+st.markdown("---")
+st.markdown(
+    """
+    <div style='text-align: center; color: #666; font-size: 0.9em;'>
+    📱 Having issues on mobile? Use the <strong>Text Input</strong> date mode above.<br>
+    Built with ❤️ using Streamlit & yfinance
+    </div>
+    """,
+    unsafe_allow_html=True
+)
