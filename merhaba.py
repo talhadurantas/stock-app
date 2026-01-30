@@ -84,12 +84,12 @@ with st.sidebar:
         # Radio button for date input preference
         date_mode = st.radio(
             "Choose date input method:",
-            ["Text Input (Mobile Friendly)", "Calendar Picker"],
+            ["Text Input (Type 8 digits)", "Dropdown Calendar (Select from lists)"],
             index=0,
-            help="Use Text Input if calendar doesn't work on your device"
+            help="Text Input: Type numbers like 20130101 | Dropdown: Select year/month/day from lists"
         )
         
-        if date_mode == "Text Input (Mobile Friendly)":
+        if date_mode == "Text Input (Type 8 digits)":
             # Default dates
             default_start = "2013-01-01"
             default_end = str(pd.to_datetime("today").date())
@@ -127,8 +127,6 @@ with st.sidebar:
                 # Date validation
                 if start_date >= end_date:
                     st.warning("⚠️ Start date must be before end date!")
-                elif end_date > pd.to_datetime("today"):
-                    st.warning("⚠️ End date cannot be in the future!")
                 else:
                     st.success(f"✅ Date range: {start_date.date()} to {end_date.date()}")
                     
@@ -138,20 +136,39 @@ with st.sidebar:
                 start_date = pd.to_datetime(default_start)
                 end_date = pd.to_datetime(default_end)
         else:
-            # Calendar picker (works better on desktop)
-            col1, col2 = st.columns(2)
+            # Custom calendar picker using dropdowns (works on all devices!)
+            st.markdown("**📅 Select dates using dropdowns:**")
+            
+            # Start Date
+            st.write("**Start Date:**")
+            col1, col2, col3 = st.columns(3)
             with col1:
-                start_date = st.date_input(
-                    "Start Date", 
-                    value=pd.to_datetime("2013-01-01"),
-                    help="Select start date from calendar"
-                )
+                start_year = st.selectbox("Year", range(2000, 2027), index=13, key="start_year")
             with col2:
-                end_date = st.date_input(
-                    "End Date", 
-                    value=pd.to_datetime("today"),
-                    help="Select end date from calendar"
-                )
+                start_month = st.selectbox("Month", range(1, 13), index=0, key="start_month")
+            with col3:
+                start_day = st.selectbox("Day", range(1, 32), index=0, key="start_day")
+            
+            # End Date
+            st.write("**End Date:**")
+            col4, col5, col6 = st.columns(3)
+            with col4:
+                end_year = st.selectbox("Year", range(2000, 2027), index=26, key="end_year")
+            with col5:
+                today = pd.to_datetime("today")
+                end_month = st.selectbox("Month", range(1, 13), index=today.month-1, key="end_month")
+            with col6:
+                end_day = st.selectbox("Day", range(1, 32), index=today.day-1, key="end_day")
+            
+            # Build dates from selections
+            try:
+                start_date = pd.to_datetime(f"{start_year}-{start_month:02d}-{start_day:02d}")
+                end_date = pd.to_datetime(f"{end_year}-{end_month:02d}-{end_day:02d}")
+                st.success(f"✅ Selected: {start_date.date()} to {end_date.date()}")
+            except:
+                st.error("❌ Invalid date selected!")
+                start_date = pd.to_datetime("2013-01-01")
+                end_date = pd.to_datetime("today")
         
         run_btn = st.form_submit_button("🚀 Run Analysis", use_container_width=True)
 
