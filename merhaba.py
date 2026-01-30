@@ -1,3 +1,4 @@
+
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -60,6 +61,101 @@ with st.sidebar:
     ticker_string = st.text_input("Enter Stock Tickers (comma separated)", value="AAPL, MSFT, GOOGL")
     tickers = [x.strip().upper() for x in ticker_string.split(',') if x.strip()]
     
+    st.subheader("Benchmark & Timeframe")
+    benchmark = st.text_input("Benchmark Ticker", value="SPY").upper()
+    
+    # --- DATE SELECTION (OUTSIDE FORM) ---
+    st.markdown("**Date Selection**")
+    
+    # Radio button for date input preference
+    date_mode = st.radio(
+        "Choose date input method:",
+        ["Text Input (Type 8 digits)", "Dropdown Calendar (Select from lists)"],
+        index=0,
+        help="Text Input: Type numbers like 20130101 | Dropdown: Select year/month/day from lists"
+    )
+    
+    if date_mode == "Text Input (Type 8 digits)":
+        # Default dates
+        default_start = "2013-01-01"
+        default_end = str(pd.to_datetime("today").date())
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            start_input = st.text_input(
+                "Start Date", 
+                value=default_start,
+                placeholder="Type: 20130101",
+                help="Just type 8 digits - dashes added automatically! (e.g., 20130101)"
+            )
+            # Show live preview
+            start_formatted = format_date_input(start_input)
+            if start_formatted != start_input and len(start_input) > 0:
+                st.caption(f"→ {start_formatted}")
+                
+        with col2:
+            end_input = st.text_input(
+                "End Date", 
+                value=default_end,
+                placeholder="Type: 20250130",
+                help="Just type 8 digits - dashes added automatically! (e.g., 20250130)"
+            )
+            # Show live preview
+            end_formatted = format_date_input(end_input)
+            if end_formatted != end_input and len(end_input) > 0:
+                st.caption(f"→ {end_formatted}")
+        
+        # Use formatted dates for validation
+        try:
+            start_date = pd.to_datetime(start_formatted)
+            end_date = pd.to_datetime(end_formatted)
+            
+            # Date validation
+            if start_date >= end_date:
+                st.warning("⚠️ Start date must be before end date!")
+            else:
+                st.success(f"✅ Date range: {start_date.date()} to {end_date.date()}")
+                
+        except Exception as e:
+            st.error(f"❌ Invalid date format! Use 8 digits (20130101) or YYYY-MM-DD (2013-01-01)")
+            # Fallback to default dates
+            start_date = pd.to_datetime(default_start)
+            end_date = pd.to_datetime(default_end)
+    else:
+        # Custom calendar picker using dropdowns (works on all devices!)
+        st.markdown("**📅 Select dates using dropdowns:**")
+        
+        # Start Date
+        st.write("**Start Date:**")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            start_year = st.selectbox("Year", range(2000, 2027), index=13, key="start_year")
+        with col2:
+            start_month = st.selectbox("Month", range(1, 13), index=0, key="start_month")
+        with col3:
+            start_day = st.selectbox("Day", range(1, 32), index=0, key="start_day")
+        
+        # End Date
+        st.write("**End Date:**")
+        col4, col5, col6 = st.columns(3)
+        with col4:
+            end_year = st.selectbox("Year", range(2000, 2027), index=26, key="end_year")
+        with col5:
+            today = pd.to_datetime("today")
+            end_month = st.selectbox("Month", range(1, 13), index=today.month-1, key="end_month")
+        with col6:
+            end_day = st.selectbox("Day", range(1, 32), index=today.day-1, key="end_day")
+        
+        # Build dates from selections
+        try:
+            start_date = pd.to_datetime(f"{start_year}-{start_month:02d}-{start_day:02d}")
+            end_date = pd.to_datetime(f"{end_year}-{end_month:02d}-{end_day:02d}")
+            st.success(f"✅ Selected: {start_date.date()} to {end_date.date()}")
+        except:
+            st.error("❌ Invalid date selected!")
+            start_date = pd.to_datetime("2013-01-01")
+            end_date = pd.to_datetime("today")
+    
     # --- FORM BAŞLANGICI ---
     with st.form(key='my_form'):
         st.subheader("Asset Allocation")
@@ -74,101 +170,6 @@ with st.sidebar:
             weights = [w / sum(weights) for w in weights]
         else:
             weights = [1.0 / len(tickers)] * len(tickers) if tickers else [1.0]
-        
-        st.subheader("Benchmark & Timeframe")
-        benchmark = st.text_input("Benchmark Ticker", value="SPY").upper()
-        
-        # --- IMPROVED DATE INPUT ---
-        st.markdown("**Date Selection**")
-        
-        # Radio button for date input preference
-        date_mode = st.radio(
-            "Choose date input method:",
-            ["Text Input (Type 8 digits)", "Dropdown Calendar (Select from lists)"],
-            index=0,
-            help="Text Input: Type numbers like 20130101 | Dropdown: Select year/month/day from lists"
-        )
-        
-        if date_mode == "Text Input (Type 8 digits)":
-            # Default dates
-            default_start = "2013-01-01"
-            default_end = str(pd.to_datetime("today").date())
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                start_input = st.text_input(
-                    "Start Date", 
-                    value=default_start,
-                    placeholder="Type: 20130101",
-                    help="Just type 8 digits - dashes added automatically! (e.g., 20130101)"
-                )
-                # Show live preview
-                start_formatted = format_date_input(start_input)
-                if start_formatted != start_input and len(start_input) > 0:
-                    st.caption(f"→ {start_formatted}")
-                    
-            with col2:
-                end_input = st.text_input(
-                    "End Date", 
-                    value=default_end,
-                    placeholder="Type: 20250130",
-                    help="Just type 8 digits - dashes added automatically! (e.g., 20250130)"
-                )
-                # Show live preview
-                end_formatted = format_date_input(end_input)
-                if end_formatted != end_input and len(end_input) > 0:
-                    st.caption(f"→ {end_formatted}")
-            
-            # Use formatted dates for validation
-            try:
-                start_date = pd.to_datetime(start_formatted)
-                end_date = pd.to_datetime(end_formatted)
-                
-                # Date validation
-                if start_date >= end_date:
-                    st.warning("⚠️ Start date must be before end date!")
-                else:
-                    st.success(f"✅ Date range: {start_date.date()} to {end_date.date()}")
-                    
-            except Exception as e:
-                st.error(f"❌ Invalid date format! Use 8 digits (20130101) or YYYY-MM-DD (2013-01-01)")
-                # Fallback to default dates
-                start_date = pd.to_datetime(default_start)
-                end_date = pd.to_datetime(default_end)
-        else:
-            # Custom calendar picker using dropdowns (works on all devices!)
-            st.markdown("**📅 Select dates using dropdowns:**")
-            
-            # Start Date
-            st.write("**Start Date:**")
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                start_year = st.selectbox("Year", range(2000, 2027), index=13, key="start_year")
-            with col2:
-                start_month = st.selectbox("Month", range(1, 13), index=0, key="start_month")
-            with col3:
-                start_day = st.selectbox("Day", range(1, 32), index=0, key="start_day")
-            
-            # End Date
-            st.write("**End Date:**")
-            col4, col5, col6 = st.columns(3)
-            with col4:
-                end_year = st.selectbox("Year", range(2000, 2027), index=26, key="end_year")
-            with col5:
-                today = pd.to_datetime("today")
-                end_month = st.selectbox("Month", range(1, 13), index=today.month-1, key="end_month")
-            with col6:
-                end_day = st.selectbox("Day", range(1, 32), index=today.day-1, key="end_day")
-            
-            # Build dates from selections
-            try:
-                start_date = pd.to_datetime(f"{start_year}-{start_month:02d}-{start_day:02d}")
-                end_date = pd.to_datetime(f"{end_year}-{end_month:02d}-{end_day:02d}")
-                st.success(f"✅ Selected: {start_date.date()} to {end_date.date()}")
-            except:
-                st.error("❌ Invalid date selected!")
-                start_date = pd.to_datetime("2013-01-01")
-                end_date = pd.to_datetime("today")
         
         run_btn = st.form_submit_button("🚀 Run Analysis", use_container_width=True)
 
