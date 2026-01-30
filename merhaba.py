@@ -18,11 +18,10 @@ def get_stock_data(tickers, benchmark, start_date, end_date):
 with st.sidebar:
     st.header("Portfolio Settings")
     
-    # 1. Ticker Input (Formun dışında bırakıyoruz ki enter'a basınca slider'lar oluşsun)
     ticker_string = st.text_input("Enter Stock Tickers (comma separated)", value="AAPL, MSFT, GOOGL")
     tickers = [x.strip().upper() for x in ticker_string.split(',') if x.strip()]
     
-    # --- FORM BAŞLANGICI (Mobil hatayı çözen kısım burası) ---
+    # --- FORM BAŞLANGICI ---
     with st.form(key='my_form'):
         st.subheader("Asset Allocation")
         weights = []
@@ -40,11 +39,28 @@ with st.sidebar:
         st.subheader("Benchmark & Timeframe")
         benchmark = st.text_input("Benchmark Ticker", value="SPY").upper()
         
-        # Tarih seçiciler artık formun içinde olduğu için mobilde hata vermez
-        start_date = st.date_input("Start Date", value=pd.to_datetime("2023-01-01"))
-        end_date = st.date_input("End Date", value=pd.to_datetime("today"))
+        # --- MOBİL ÇÖZÜMÜ ---
+        # Kullanıcıya seçme şansı veriyoruz
+        mobile_mode = st.checkbox("Mobilde tarih sorunu yaşıyorum (Elle Gir)", value=False)
         
-        # Buton artık bir "Form Submit" butonu
+        if mobile_mode:
+            # Sorunsuz Metin Kutuları
+            start_input = st.text_input("Start Date (YYYY-MM-DD)", value="2023-01-01")
+            end_input = st.text_input("End Date (YYYY-MM-DD)", value=str(pd.to_datetime("today").date()))
+            
+            # Metni Tarihe Çevirme (Hata önleyici)
+            try:
+                start_date = pd.to_datetime(start_input)
+                end_date = pd.to_datetime(end_input)
+            except:
+                st.error("Tarih formatı hatalı! Lütfen YYYY-AA-GG (2023-01-01) şeklinde yazın.")
+                start_date = pd.to_datetime("2023-01-01")
+                end_date = pd.to_datetime("today")
+        else:
+            # Normal Takvim (Masaüstü için)
+            start_date = st.date_input("Start Date", value=pd.to_datetime("2023-01-01"))
+            end_date = st.date_input("End Date", value=pd.to_datetime("today"))
+        
         run_btn = st.form_submit_button("🚀 Run Analysis")
 
 # --- Analysis Logic ---
