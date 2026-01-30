@@ -1,4 +1,3 @@
-
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -57,6 +56,9 @@ if 'date_input_mode' not in st.session_state:
 # --- Sidebar ---
 with st.sidebar:
     st.header("Portfolio Settings")
+    
+    # Information bubble about calculation method
+    st.info("ℹ️ **Note:** Returns are calculated assuming equal-weighted portfolio and dividend reinvestment.")
     
     ticker_string = st.text_input("Enter Stock Tickers (comma separated)", value="AAPL, MSFT, GOOGL")
     tickers = [x.strip().upper() for x in ticker_string.split(',') if x.strip()]
@@ -230,18 +232,30 @@ if run_btn:
             total_return = portfolio_cum.iloc[-1] - 1
             bench_total_return = bench_cum.iloc[-1] - 1
             
+            # Calculate CAGR (Compound Annual Growth Rate)
+            num_years = (end_date - start_date).days / 365.25
+            portfolio_cagr = (portfolio_cum.iloc[-1] ** (1 / num_years)) - 1 if num_years > 0 else 0
+            bench_cagr = (bench_cum.iloc[-1] ** (1 / num_years)) - 1 if num_years > 0 else 0
+            
             # --- RESULTS DISPLAY ---
             st.success("✅ Analysis Complete!")
             
             # Metrics
-            col1, col2, col3 = st.columns(3)
+            col1, col2, col3, col4 = st.columns(4)
             col1.metric("Portfolio Return", f"{total_return:.2%}", 
                        delta=f"{(total_return - bench_total_return):.2%} vs Benchmark")
-            col2.metric("Benchmark Return", f"{bench_total_return:.2%}")
+            col2.metric("Portfolio CAGR", f"{portfolio_cagr:.2%}")
+            col3.metric("Benchmark Return", f"{bench_total_return:.2%}")
+            col4.metric("Benchmark CAGR", f"{bench_cagr:.2%}")
             
             # Calculate volatility
             portfolio_vol = portfolio_daily.std() * (252 ** 0.5)  # Annualized
-            col3.metric("Portfolio Volatility", f"{portfolio_vol:.2%}")
+            bench_vol = bench_returns.std() * (252 ** 0.5)
+            
+            # Volatility row
+            col5, col6 = st.columns(2)
+            col5.metric("Portfolio Volatility", f"{portfolio_vol:.2%}")
+            col6.metric("Benchmark Volatility", f"{bench_vol:.2%}")
             
             # Chart
             st.subheader("📊 Growth Chart ($1 Investment)")
@@ -264,17 +278,20 @@ if run_btn:
                 with stats_col1:
                     st.markdown("**Portfolio Statistics**")
                     st.write(f"• Total Return: {total_return:.2%}")
+                    st.write(f"• CAGR (Annualized): {portfolio_cagr:.2%}")
                     st.write(f"• Annualized Volatility: {portfolio_vol:.2%}")
                     st.write(f"• Best Day: {portfolio_daily.max():.2%}")
                     st.write(f"• Worst Day: {portfolio_daily.min():.2%}")
+                    st.write(f"• Time Period: {num_years:.2f} years")
                 
                 with stats_col2:
                     st.markdown("**Benchmark Statistics**")
-                    bench_vol = bench_returns.std() * (252 ** 0.5)
                     st.write(f"• Total Return: {bench_total_return:.2%}")
+                    st.write(f"• CAGR (Annualized): {bench_cagr:.2%}")
                     st.write(f"• Annualized Volatility: {bench_vol:.2%}")
                     st.write(f"• Best Day: {bench_returns.max():.2%}")
                     st.write(f"• Worst Day: {bench_returns.min():.2%}")
+                    st.write(f"• Time Period: {num_years:.2f} years")
             
         except Exception as e:
             st.error(f"❌ An error occurred: {e}")
