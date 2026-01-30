@@ -7,6 +7,15 @@ import matplotlib.pyplot as plt
 st.set_page_config(page_title="Pro Portfolio Visualizer", layout="wide")
 st.title("📈 Pro Stock Portfolio Visualizer")
 
+# --- 1. The Caching Function (The Fix) ---
+# This tells Streamlit: "If the inputs haven't changed, use the memory."
+@st.cache_data(ttl=3600) # Remember data for 1 hour
+def get_stock_data(tickers, benchmark, start_date, end_date):
+    # Auto-adjust=False often helps with data alignment
+    data = yf.download(tickers, start=start_date, end=end_date, auto_adjust=False)
+    bench_data = yf.download(benchmark, start=start_date, end=end_date, auto_adjust=False)
+    return data, bench_data
+
 # --- Sidebar ---
 with st.sidebar:
     st.header("Portfolio Settings")
@@ -39,24 +48,21 @@ if run_btn:
         st.error("Please enter at least one stock ticker.")
     else:
         try:
-            # Fetch Data with auto_adjust=False to ensure 'Adj Close' exists usually
-            with st.spinner("Fetching data..."):
-                raw_data = yf.download(tickers, start=start_date, end=end_date, auto_adjust=False)
-                bench_raw = yf.download(benchmark, start=start_date, end=end_date, auto_adjust=False)
+            with st.spinner("Fetching data... (This might take a moment)"):
+                # Call the cached function instead of downloading directly
+                raw_data, bench_raw = get_stock_data(tickers, benchmark, start_date, end_date)
 
-            # Check if data is empty
             if raw_data.empty or bench_raw.empty:
-                st.error("No data found. Check your internet connection or ticker names.")
+                st.error("No data found. Yahoo might be temporarily blocking requests. Try again in 1 minute.")
                 st.stop()
 
-            # --- SMART COLUMN SELECTOR (The Fix) ---
-            # Try to grab 'Adj Close', if missing, grab 'Close'
+            # --- Data Processing ---
+            # Smart column selection
             if 'Adj Close' in raw_data.columns:
                 data = raw_data['Adj Close']
             elif 'Close' in raw_data.columns:
                 data = raw_data['Close']
             else:
-                # Fallback for single column result
                 data = raw_data
             
             if 'Adj Close' in bench_raw.columns:
@@ -66,16 +72,14 @@ if run_btn:
             else:
                 bench_data = bench_raw
 
-            # Handle single-stock case (ensure it's a DataFrame)
             if len(tickers) == 1:
                 if isinstance(data, pd.Series):
                     data = data.to_frame(tickers[0])
             
-            # Align Data (Match dates)
+            # Align Dates
             daily_returns = data.pct_change().dropna()
             bench_returns = bench_data.pct_change().dropna()
             
-            # Find common dates
             common_index = daily_returns.index.intersection(bench_returns.index)
             daily_returns = daily_returns.loc[common_index]
             bench_returns = bench_returns.loc[common_index]
@@ -84,8 +88,7 @@ if run_btn:
                 st.error("Timestamps didn't match. Try a longer date range.")
                 st.stop()
 
-            # Calculate Portfolio Growth
-            # (Use .sum(axis=1) only if we have multiple columns, otherwise just multiply)
+            # Calculate Stats
             if len(tickers) > 1:
                 portfolio_daily = (daily_returns * weights).sum(axis=1)
             else:
@@ -93,16 +96,11 @@ if run_btn:
                 
             portfolio_cum = (1 + portfolio_daily).cumprod()
             
-            # Calculate Benchmark Growth
-            # If benchmark returns a dataframe (some versions do), squeeze it to a series
             if isinstance(bench_returns, pd.DataFrame):
                 bench_returns = bench_returns.iloc[:, 0]
-            
             bench_cum = (1 + bench_returns).cumprod()
             
-            # --- Display Results ---
-            
-            # Metrics
+            # Display
             total_return = portfolio_cum.iloc[-1] - 1
             bench_total_return = bench_cum.iloc[-1] - 1
             
@@ -110,7 +108,6 @@ if run_btn:
             col1.metric("Your Return", f"{total_return:.2%}")
             col2.metric("Benchmark Return", f"{bench_total_return:.2%}")
 
-            # Plot
             st.subheader("Growth Chart ($1 Investment)")
             fig, ax = plt.subplots(figsize=(10, 5))
             ax.plot(portfolio_cum.index, portfolio_cum, label='Your Portfolio', linewidth=2)
