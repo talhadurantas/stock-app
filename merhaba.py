@@ -14,6 +14,27 @@ def get_stock_data(tickers, benchmark, start_date, end_date):
     bench_data = yf.download(benchmark, start=start_date, end=end_date, auto_adjust=False)
     return data, bench_data
 
+# --- Date Formatting Helper ---
+def format_date_input(date_str):
+    """
+    Automatically formats date input - accepts various formats:
+    - 20130101 or 2013 01 01 -> 2013-01-01
+    - 2013-01-01 -> 2013-01-01 (already formatted)
+    """
+    # Remove all spaces and dashes
+    clean = date_str.strip().replace("-", "").replace(" ", "").replace("/", "")
+    
+    # If it's 8 digits (YYYYMMDD), format it
+    if len(clean) == 8 and clean.isdigit():
+        return f"{clean[0:4]}-{clean[4:6]}-{clean[6:8]}"
+    
+    # If already formatted correctly, return as is
+    if len(date_str) == 10 and date_str[4] == "-" and date_str[7] == "-":
+        return date_str
+    
+    # Otherwise return original (will be validated later)
+    return date_str
+
 # --- Mobile Detection (Better UX) ---
 # Automatically detect if user might be on mobile based on screen width
 # This is stored in session state
@@ -66,21 +87,29 @@ with st.sidebar:
                 start_input = st.text_input(
                     "Start Date", 
                     value=default_start,
-                    placeholder="YYYY-MM-DD",
-                    help="Format: YYYY-MM-DD (e.g., 2013-01-01)"
+                    placeholder="20130101 or 2013-01-01",
+                    help="Enter 8 digits (20130101) or YYYY-MM-DD format"
                 )
             with col2:
                 end_input = st.text_input(
                     "End Date", 
                     value=default_end,
-                    placeholder="YYYY-MM-DD",
-                    help="Format: YYYY-MM-DD (e.g., 2024-12-31)"
+                    placeholder="20250130 or 2025-01-30",
+                    help="Enter 8 digits (20250130) or YYYY-MM-DD format"
                 )
+            
+            # Auto-format the dates
+            start_formatted = format_date_input(start_input)
+            end_formatted = format_date_input(end_input)
+            
+            # Show formatted preview if user entered numbers
+            if start_formatted != start_input or end_formatted != end_input:
+                st.info(f"📅 Auto-formatted: {start_formatted} to {end_formatted}")
             
             # Validate and convert dates
             try:
-                start_date = pd.to_datetime(start_input)
-                end_date = pd.to_datetime(end_input)
+                start_date = pd.to_datetime(start_formatted)
+                end_date = pd.to_datetime(end_formatted)
                 
                 # Date validation
                 if start_date >= end_date:
@@ -91,7 +120,7 @@ with st.sidebar:
                     st.success(f"✅ Date range: {start_date.date()} to {end_date.date()}")
                     
             except Exception as e:
-                st.error(f"❌ Invalid date format! Please use YYYY-MM-DD (e.g., 2013-01-01)")
+                st.error(f"❌ Invalid date format! Use 8 digits (20130101) or YYYY-MM-DD (2013-01-01)")
                 # Fallback to default dates
                 start_date = pd.to_datetime(default_start)
                 end_date = pd.to_datetime(default_end)
