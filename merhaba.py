@@ -58,7 +58,7 @@ with st.sidebar:
         
         if date_mode == "Text Input (Mobile Friendly)":
             # Default dates
-            default_start = "2023-01-01"
+            default_start = "2013-01-01"
             default_end = str(pd.to_datetime("today").date())
             
             col1, col2 = st.columns(2)
@@ -67,7 +67,7 @@ with st.sidebar:
                     "Start Date", 
                     value=default_start,
                     placeholder="YYYY-MM-DD",
-                    help="Format: YYYY-MM-DD (e.g., 2023-01-01)"
+                    help="Format: YYYY-MM-DD (e.g., 2013-01-01)"
                 )
             with col2:
                 end_input = st.text_input(
@@ -91,7 +91,7 @@ with st.sidebar:
                     st.success(f"✅ Date range: {start_date.date()} to {end_date.date()}")
                     
             except Exception as e:
-                st.error(f"❌ Invalid date format! Please use YYYY-MM-DD (e.g., 2023-01-01)")
+                st.error(f"❌ Invalid date format! Please use YYYY-MM-DD (e.g., 2013-01-01)")
                 # Fallback to default dates
                 start_date = pd.to_datetime(default_start)
                 end_date = pd.to_datetime(default_end)
@@ -101,7 +101,7 @@ with st.sidebar:
             with col1:
                 start_date = st.date_input(
                     "Start Date", 
-                    value=pd.to_datetime("2023-01-01"),
+                    value=pd.to_datetime("2013-01-01"),
                     help="Select start date from calendar"
                 )
             with col2:
