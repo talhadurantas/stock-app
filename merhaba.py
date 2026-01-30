@@ -47,6 +47,29 @@ def format_date_input(date_str):
     # Otherwise return original (will be validated later)
     return date_str
 
+# --- Max Drawdown Calculation ---
+def calculate_max_drawdown(cumulative_returns):
+    """
+    Calculate the maximum drawdown from cumulative returns.
+    Max Drawdown = (Trough Value - Peak Value) / Peak Value
+    """
+    running_max = cumulative_returns.cummax()
+    drawdown = (cumulative_returns - running_max) / running_max
+    max_drawdown = drawdown.min()
+    return max_drawdown
+
+# --- Sharpe Ratio Calculation ---
+def calculate_sharpe_ratio(daily_returns, risk_free_rate=0.02):
+    """
+    Calculate annualized Sharpe Ratio.
+    Sharpe Ratio = (Return - Risk Free Rate) / Volatility
+    Default risk-free rate is 2% annually.
+    """
+    excess_returns = daily_returns.mean() * 252 - risk_free_rate
+    volatility = daily_returns.std() * (252 ** 0.5)
+    sharpe = excess_returns / volatility if volatility != 0 else 0
+    return sharpe
+
 # --- Mobile Detection (Better UX) ---
 # Automatically detect if user might be on mobile based on screen width
 # This is stored in session state
@@ -237,10 +260,22 @@ if run_btn:
             portfolio_cagr = (portfolio_cum.iloc[-1] ** (1 / num_years)) - 1 if num_years > 0 else 0
             bench_cagr = (bench_cum.iloc[-1] ** (1 / num_years)) - 1 if num_years > 0 else 0
             
+            # Calculate Max Drawdown
+            portfolio_drawdown = calculate_max_drawdown(portfolio_cum)
+            bench_drawdown = calculate_max_drawdown(bench_cum)
+            
+            # Calculate Sharpe Ratio
+            portfolio_sharpe = calculate_sharpe_ratio(portfolio_daily)
+            bench_sharpe = calculate_sharpe_ratio(bench_returns)
+            
+            # Calculate volatility
+            portfolio_vol = portfolio_daily.std() * (252 ** 0.5)  # Annualized
+            bench_vol = bench_returns.std() * (252 ** 0.5)
+            
             # --- RESULTS DISPLAY ---
             st.success("✅ Analysis Complete!")
             
-            # Metrics
+            # Metrics Row 1: Returns and CAGR
             col1, col2, col3, col4 = st.columns(4)
             col1.metric("Portfolio Return", f"{total_return:.2%}", 
                        delta=f"{(total_return - bench_total_return):.2%} vs Benchmark")
@@ -248,14 +283,17 @@ if run_btn:
             col3.metric("Benchmark Return", f"{bench_total_return:.2%}")
             col4.metric("Benchmark CAGR", f"{bench_cagr:.2%}")
             
-            # Calculate volatility
-            portfolio_vol = portfolio_daily.std() * (252 ** 0.5)  # Annualized
-            bench_vol = bench_returns.std() * (252 ** 0.5)
-            
-            # Volatility row
-            col5, col6 = st.columns(2)
+            # Metrics Row 2: Risk Metrics
+            col5, col6, col7, col8 = st.columns(4)
             col5.metric("Portfolio Volatility", f"{portfolio_vol:.2%}")
-            col6.metric("Benchmark Volatility", f"{bench_vol:.2%}")
+            col6.metric("Portfolio Sharpe Ratio", f"{portfolio_sharpe:.2f}")
+            col7.metric("Benchmark Volatility", f"{bench_vol:.2%}")
+            col8.metric("Benchmark Sharpe Ratio", f"{bench_sharpe:.2f}")
+            
+            # Metrics Row 3: Drawdown
+            col9, col10 = st.columns(2)
+            col9.metric("Portfolio Max Drawdown", f"{portfolio_drawdown:.2%}")
+            col10.metric("Benchmark Max Drawdown", f"{bench_drawdown:.2%}")
             
             # Chart
             st.subheader("📊 Growth Chart ($1 Investment)")
@@ -280,6 +318,8 @@ if run_btn:
                     st.write(f"• Total Return: {total_return:.2%}")
                     st.write(f"• CAGR (Annualized): {portfolio_cagr:.2%}")
                     st.write(f"• Annualized Volatility: {portfolio_vol:.2%}")
+                    st.write(f"• Sharpe Ratio: {portfolio_sharpe:.2f}")
+                    st.write(f"• Max Drawdown: {portfolio_drawdown:.2%}")
                     st.write(f"• Best Day: {portfolio_daily.max():.2%}")
                     st.write(f"• Worst Day: {portfolio_daily.min():.2%}")
                     st.write(f"• Time Period: {num_years:.2f} years")
@@ -289,6 +329,8 @@ if run_btn:
                     st.write(f"• Total Return: {bench_total_return:.2%}")
                     st.write(f"• CAGR (Annualized): {bench_cagr:.2%}")
                     st.write(f"• Annualized Volatility: {bench_vol:.2%}")
+                    st.write(f"• Sharpe Ratio: {bench_sharpe:.2f}")
+                    st.write(f"• Max Drawdown: {bench_drawdown:.2%}")
                     st.write(f"• Best Day: {bench_returns.max():.2%}")
                     st.write(f"• Worst Day: {bench_returns.min():.2%}")
                     st.write(f"• Time Period: {num_years:.2f} years")
