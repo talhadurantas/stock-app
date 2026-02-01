@@ -224,11 +224,17 @@ if run_analysis:
                     # Replace all holdings
                     current_holdings = {ticker: weight for ticker, weight in zip(buy_tickers, weights)}
                 
+                # Calculate total invested percentage
+                total_invested = sum(current_holdings.values()) if current_holdings else 0
+                cash_percentage = 100 - total_invested
+                
                 # Record portfolio state
-                if current_holdings:
+                if current_holdings or cash_percentage > 0:
                     portfolio_timeline.append({
                         'start_date': trans_date,
                         'holdings': dict(current_holdings),  # Store as dict with weights
+                        'invested_pct': total_invested,
+                        'cash_pct': cash_percentage,
                         'action': row['Action'],
                         'notes': row['Notes']
                     })
@@ -236,6 +242,16 @@ if run_analysis:
             if not portfolio_timeline:
                 st.error("❌ No valid portfolio composition found!")
                 st.stop()
+            
+            # Check for cash drag and show warnings
+            periods_with_cash = [p for p in portfolio_timeline if p['cash_pct'] > 5]
+            if periods_with_cash:
+                st.warning(f"⚠️ **Cash Drag Detected!** You have {len(periods_with_cash)} period(s) with uninvested cash. This will reduce returns.")
+                with st.expander("💡 See Cash Allocation Details"):
+                    for p in periods_with_cash:
+                        st.write(f"**{p['start_date'].date()}**: {p['invested_pct']:.1f}% invested, {p['cash_pct']:.1f}% cash")
+                        if p['cash_pct'] > 5:
+                            st.caption(f"→ Consider adding a 'Buy' or 'Rebalance' transaction to reinvest the {p['cash_pct']:.1f}% cash")
             
             # Add end dates to each period
             for i in range(len(portfolio_timeline)):
@@ -248,6 +264,26 @@ if run_analysis:
             portfolio_timeline = [p for p in portfolio_timeline if p['start_date'] < global_end]
             if portfolio_timeline[0]['start_date'] > global_start:
                 st.warning(f"⚠️ First transaction is after start date. Analysis begins from {portfolio_timeline[0]['start_date'].date()}")
+            
+            # === OPTIMIZATION: Pre-load all stock data in ONE API call ===
+            # Collect all unique tickers from all periods
+            all_tickers = set()
+            for period in portfolio_timeline:
+                all_tickers.update(period['holdings'].keys())
+            
+            all_tickers = list(all_tickers)
+            
+            if not all_tickers:
+                st.error("❌ No stocks found in portfolio!")
+                st.stop()
+            
+            # Download ALL data once for the entire period
+            with st.spinner(f"Fetching data for {len(all_tickers)} stocks..."):
+                master_data = get_stock_data(all_tickers, global_start, global_end)
+            
+            if master_data.empty:
+                st.error("❌ Could not fetch stock data!")
+                st.stop()
             
             # Calculate Benchmark
             bench_data = get_stock_data([benchmark_ticker], global_start, global_end)
@@ -275,8 +311,12 @@ if run_analysis:
                 start = max(period['start_date'], global_start)
                 end = min(period['end_date'], global_end)
                 
-                # Get data
-                data = get_stock_data(tickers, start, end)
+                # === OPTIMIZED: Slice from pre-loaded master data ===
+                if len(tickers) == 1:
+                    data = master_data[tickers[0]].loc[start:end].to_frame(tickers[0])
+                else:
+                    data = master_data[tickers].loc[start:end]
+                
                 if data.empty:
                     continue
                 
@@ -370,7 +410,7 @@ if run_analysis:
             st.pyplot(fig)
             
             # Portfolio Timeline Table
-            with st.expander("📋 Portfolio Timeline"):
+            with st.expander("📋 Portfolio Timeline & Cash Allocation"):
                 timeline_display = []
                 for p in portfolio_timeline:
                     holdings_dict = p['holdings']
@@ -380,14 +420,30 @@ if run_analysis:
                         'Start Date': p['start_date'].date(),
                         'End Date': p['end_date'].date(),
                         'Holdings (Weight %)': holdings_str,
+                        'Invested %': f"{p['invested_pct']:.1f}%",
+                        'Cash %': f"{p['cash_pct']:.1f}%",
                         'Action': p['action'],
                         'Notes': p['notes']
                     })
-                st.dataframe(pd.DataFrame(timeline_display), use_container_width=True)
+                
+                df_timeline = pd.DataFrame(timeline_display)
+                
+                # Highlight rows with significant cash
+                def highlight_cash(row):
+                    cash_val = float(row['Cash %'].rstrip('%'))
+                    if cash_val > 5:
+                        return ['background-color: #fff3cd'] * len(row)
+                    return [''] * len(row)
+                
+                st.dataframe(df_timeline.style.apply(highlight_cash, axis=1), use_container_width=True)
+                st.caption("💡 Rows highlighted in yellow have >5% uninvested cash")
             
             # Detailed Stats
             with st.expander("📈 Detailed Statistics"):
                 stats_col1, stats_col2 = st.columns(2)
+                
+                # Calculate average invested percentage across all periods
+                avg_invested = sum([p['invested_pct'] for p in portfolio_timeline]) / len(portfolio_timeline)
                 
                 with stats_col1:
                     st.markdown("**Portfolio Statistics**")
@@ -397,6 +453,9 @@ if run_analysis:
                     st.write(f"• Sharpe Ratio: {portfolio_sharpe:.2f}")
                     st.write(f"• Max Drawdown: {portfolio_drawdown:.2%}")
                     st.write(f"• Transactions: {len(transactions)}")
+                    st.write(f"• **Avg Invested %: {avg_invested:.1f}%**")
+                    if avg_invested < 95:
+                        st.write(f"• **Avg Cash %: {100 - avg_invested:.1f}%** ⚠️")
                 
                 with stats_col2:
                     st.markdown("**Benchmark Statistics**")
