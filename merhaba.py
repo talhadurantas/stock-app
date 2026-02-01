@@ -171,7 +171,6 @@ if run_analysis:
                     
                     # If weights are missing, try to be smart about defaults
                     if not weights:
-                        # Strategy: Assign equal share of the "Available Cash" or default to equal split
                         weights = [100.0 / len(buy_tickers)] * len(buy_tickers)
                     
                     # Add to holdings (Upsert)
@@ -180,9 +179,6 @@ if run_analysis:
                 
                 # Handle Rebalance (Clear everything and set new)
                 if row['Action'] == 'Rebalance':
-                    # Logic handled by the upsert above if user clears first, but let's be safe
-                    # A true rebalance implies the final state is EXACTLY what is in "Buy"
-                    # For simplicity in this logic, we assume user lists ALL desired stocks in Buy for a rebalance
                     pass 
 
                 # --- CRITICAL FIX: AUTO-NORMALIZE ---
@@ -289,12 +285,7 @@ if run_analysis:
                     aligned_weights = [weights[tickers.index(col)] for col in data.columns]
                     portfolio_daily = (daily_returns * aligned_weights).sum(axis=1)
                 else:
-                    portfolio_daily = daily_returns.iloc[:, 0] * weights[0] # Correct for single stock weight < 100%
-                
-                # Apply cash drag (Cash earns 0%)
-                # If invested is 80%, return is 80% * stock_return + 20% * 0
-                # The weighted sum above handles the stock part. 
-                # But if single stock 50%, the above line gives 50% of return, which is correct.
+                    portfolio_daily = daily_returns.iloc[:, 0] * weights[0] 
                 
                 portfolio_cum = current_value * (1 + portfolio_daily).cumprod()
                 if not portfolio_cum.empty:
@@ -330,6 +321,8 @@ if run_analysis:
             
             portfolio_vol = portfolio_daily.std() * (252 ** 0.5)
             portfolio_sharpe = calculate_sharpe_ratio(portfolio_daily)
+            bench_vol = bench_returns.std() * (252 ** 0.5)
+            bench_sharpe = calculate_sharpe_ratio(bench_returns)
             
             # --- DISPLAY ---
             st.success(f"✅ Analysis Complete! (Portfolio automatically normalized to 100%)")
@@ -371,6 +364,33 @@ if run_analysis:
                         "Notes": p['notes']
                     })
                 st.dataframe(pd.DataFrame(timeline_data), use_container_width=True)
+
+            # Detailed Stats (ADDED BACK!)
+            with st.expander("📈 Detailed Statistics"):
+                stats_col1, stats_col2 = st.columns(2)
+                
+                # Calculate average invested percentage across all periods
+                avg_invested = sum([p['invested_pct'] for p in portfolio_timeline]) / len(portfolio_timeline)
+                
+                with stats_col1:
+                    st.markdown("**Portfolio Statistics**")
+                    st.write(f"• Total Return: {total_return:.2%}")
+                    st.write(f"• CAGR: {portfolio_cagr:.2%}")
+                    st.write(f"• Volatility: {portfolio_vol:.2%}")
+                    st.write(f"• Sharpe Ratio: {portfolio_sharpe:.2f}")
+                    st.write(f"• Max Drawdown: {portfolio_drawdown:.2%}")
+                    st.write(f"• Transactions: {len(transactions)}")
+                    st.write(f"• **Avg Invested %: {avg_invested:.1f}%**")
+                    if avg_invested < 95:
+                        st.write(f"• **Avg Cash %: {100 - avg_invested:.1f}%** ⚠️")
+                
+                with stats_col2:
+                    st.markdown("**Benchmark Statistics**")
+                    st.write(f"• Total Return: {bench_total_return:.2%}")
+                    st.write(f"• CAGR: {bench_cagr:.2%}")
+                    st.write(f"• Volatility: {bench_vol:.2%}")
+                    st.write(f"• Sharpe Ratio: {bench_sharpe:.2f}")
+                    st.write(f"• Max Drawdown: {bench_drawdown:.2%}")
 
     except Exception as e:
         st.error(f"Error: {e}")
