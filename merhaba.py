@@ -297,7 +297,6 @@ st.markdown("---")
 # Transaction table editor
 st.markdown("#### 📝 Transaction Log")
 
-# --- FIX: DIRECT RERUN ON CHANGE (SOLVES RESET & CRASH) ---
 edited_df = st.data_editor(
     st.session_state.transactions,
     num_rows="dynamic",
@@ -340,9 +339,8 @@ edited_df = st.data_editor(
     hide_index=False
 )
 
-if not edited_df.equals(st.session_state.transactions):
-    st.session_state.transactions = edited_df
-    st.rerun()
+# Update session state
+st.session_state.transactions = edited_df
 
 # ============================================================================
 # VALIDATION SYSTEM
@@ -674,11 +672,11 @@ if run_analysis:
                 
                 # Re-calculation for clarity:
                 if len(tickers) > 1:
-                      # This gives return contribution of stocks
-                      # e.g. Stock A returns 1%, weight 0.25 -> contributes 0.25%
-                      stock_contribution = (daily_returns * [weights[tickers.index(col)] for col in data.columns]).sum(axis=1)
+                     # This gives return contribution of stocks
+                     # e.g. Stock A returns 1%, weight 0.25 -> contributes 0.25%
+                     stock_contribution = (daily_returns * [weights[tickers.index(col)] for col in data.columns]).sum(axis=1)
                 else:
-                      stock_contribution = daily_returns.iloc[:, 0] * weights[0]
+                     stock_contribution = daily_returns.iloc[:, 0] * weights[0]
                 
                 # Total Return = Stock Contribution + Cash Contribution
                 portfolio_daily = stock_contribution + (cash_daily_return * cash_weight)
@@ -760,11 +758,6 @@ if run_analysis:
             avg_invested = sum([p['invested_pct'] for p in portfolio_timeline]) / len(portfolio_timeline)
             avg_cash = 100 - avg_invested
             
-            # Comparison
-            excess_return = total_return - bench_total_return
-            excess_cagr = portfolio_cagr - bench_cagr
-            excess_sharpe = portfolio_sharpe - bench_sharpe
-
         # ================================================================
         # DISPLAY RESULTS
         # ================================================================
