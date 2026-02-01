@@ -2,280 +2,286 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import matplotlib.pyplot as plt
+from datetime import datetime
 
 # --- App Configuration ---
-st.set_page_config(page_title="Pro Portfolio Visualizer", layout="wide")
-st.title("📈 Pro Stock Portfolio Visualizer")
+st.set_page_config(page_title="Portfolio Visualizer - Transaction Mode", layout="wide")
+st.title("📈 Portfolio Visualizer - Transaction-Based")
 
-# --- Caching Function ---
-@st.cache_data(ttl=3600)
-def get_stock_data(tickers, benchmark, start_date, end_date):
-    data = yf.download(tickers, start=start_date, end=end_date, auto_adjust=False)
-    bench_data = yf.download(benchmark, start=start_date, end=end_date, auto_adjust=False)
-    return data, bench_data
-
-# --- Date Formatting Helper ---
+# --- Helper Functions ---
 def format_date_input(date_str):
-    """
-    Automatically formats date input with real-time dash insertion:
-    - User types: 2013 -> 2013
-    - User types: 20130 -> 2013-0
-    - User types: 201301 -> 2013-01
-    - User types: 2013010 -> 2013-01-0
-    - User types: 20130101 -> 2013-01-01
-    Also accepts spaces, slashes, and already formatted dates.
-    """
-    # Remove all spaces, dashes, and slashes first
     clean = date_str.strip().replace("-", "").replace(" ", "").replace("/", "")
-    
-    # If it's only digits, format progressively
     if clean.isdigit():
-        if len(clean) <= 4:
-            # Just year: 2013
-            return clean
-        elif len(clean) <= 6:
-            # Year + month: 2013-01
-            return f"{clean[0:4]}-{clean[4:]}"
-        elif len(clean) >= 7:
-            # Full date: 2013-01-01
-            return f"{clean[0:4]}-{clean[4:6]}-{clean[6:8]}"
-    
-    # If already formatted correctly, return as is
-    if len(date_str) == 10 and date_str[4] == "-" and date_str[7] == "-":
-        return date_str
-    
-    # Otherwise return original (will be validated later)
+        if len(clean) <= 4: return clean
+        elif len(clean) <= 6: return f"{clean[0:4]}-{clean[4:]}"
+        elif len(clean) >= 7: return f"{clean[0:4]}-{clean[4:6]}-{clean[6:8]}"
+    if len(date_str) == 10 and date_str[4] == "-" and date_str[7] == "-": return date_str
     return date_str
 
-# --- Max Drawdown Calculation ---
+@st.cache_data(ttl=3600)
+def get_stock_data(tickers, start_date, end_date):
+    if not tickers: return pd.DataFrame()
+    data = yf.download(tickers, start=start_date, end=end_date, auto_adjust=False)
+    if 'Adj Close' in data.columns: data = data['Adj Close']
+    elif 'Close' in data.columns: data = data['Close']
+    
+    if len(tickers) == 1:
+        if isinstance(data, pd.Series):
+            data = data.to_frame(tickers[0])
+    return data
+
 def calculate_max_drawdown(cumulative_returns):
-    """
-    Calculate the maximum drawdown from cumulative returns.
-    Max Drawdown = (Trough Value - Peak Value) / Peak Value
-    """
     running_max = cumulative_returns.cummax()
     drawdown = (cumulative_returns - running_max) / running_max
-    max_drawdown = drawdown.min()
-    return max_drawdown
+    return drawdown.min()
 
-# --- Sharpe Ratio Calculation ---
 def calculate_sharpe_ratio(daily_returns, risk_free_rate=0.02):
-    """
-    Calculate annualized Sharpe Ratio.
-    Sharpe Ratio = (Return - Risk Free Rate) / Volatility
-    Default risk-free rate is 2% annually.
-    """
     excess_returns = daily_returns.mean() * 252 - risk_free_rate
     volatility = daily_returns.std() * (252 ** 0.5)
-    sharpe = excess_returns / volatility if volatility != 0 else 0
-    return sharpe
-
-# --- Mobile Detection (Better UX) ---
-# Automatically detect if user might be on mobile based on screen width
-# This is stored in session state
-if 'date_input_mode' not in st.session_state:
-    st.session_state.date_input_mode = 'auto'
+    return excess_returns / volatility if volatility != 0 else 0
 
 # --- Sidebar ---
 with st.sidebar:
-    st.header("Portfolio Settings")
+    st.header("Settings")
+    st.info("ℹ️ Returns calculated with dividend reinvestment.")
     
-    # Information bubble about calculation method
-    st.info("ℹ️ **Note:** Returns are calculated assuming equal-weighted portfolio and dividend reinvestment.")
+    # Date Range
+    st.markdown("### 📅 Analysis Period")
+    c1, c2 = st.columns(2)
+    start_input = c1.text_input("Start", "2015-01-01", help="YYYY-MM-DD or 20150101")
+    end_input = c2.text_input("End", str(pd.to_datetime("today").date()))
     
-    ticker_string = st.text_input("Enter Stock Tickers (comma separated)", value="AAPL, MSFT, GOOGL")
-    tickers = [x.strip().upper() for x in ticker_string.split(',') if x.strip()]
+    try:
+        global_start = pd.to_datetime(format_date_input(start_input))
+        global_end = pd.to_datetime(format_date_input(end_input))
+    except:
+        st.error("Invalid date format")
+        global_start = pd.to_datetime("2015-01-01")
+        global_end = pd.to_datetime("today")
     
-    st.subheader("Benchmark & Timeframe")
-    benchmark = st.text_input("Benchmark Ticker", value="SPY").upper()
-    
-    # --- DATE SELECTION (OUTSIDE FORM) ---
-    st.markdown("**Date Selection**")
-    
-    # Radio button for date input preference
-    date_mode = st.radio(
-        "Choose date input method:",
-        ["Text Input (Type 8 digits)", "Dropdown Calendar (Select from lists)"],
-        index=0,
-        help="Text Input: Type numbers like 20130101 | Dropdown: Select year/month/day from lists"
-    )
-    
-    if date_mode == "Text Input (Type 8 digits)":
-        # Default dates
-        default_start = "2013-01-01"
-        default_end = str(pd.to_datetime("today").date())
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            start_input = st.text_input(
-                "Start Date", 
-                value=default_start,
-                placeholder="Type: 20130101",
-                help="Just type 8 digits - dashes added automatically! (e.g., 20130101)"
-            )
-            # Show live preview
-            start_formatted = format_date_input(start_input)
-            if start_formatted != start_input and len(start_input) > 0:
-                st.caption(f"→ {start_formatted}")
-                
-        with col2:
-            end_input = st.text_input(
-                "End Date", 
-                value=default_end,
-                placeholder="Type: 20250130",
-                help="Just type 8 digits - dashes added automatically! (e.g., 20250130)"
-            )
-            # Show live preview
-            end_formatted = format_date_input(end_input)
-            if end_formatted != end_input and len(end_input) > 0:
-                st.caption(f"→ {end_formatted}")
-        
-        # Use formatted dates for validation
-        try:
-            start_date = pd.to_datetime(start_formatted)
-            end_date = pd.to_datetime(end_formatted)
-            
-            # Date validation
-            if start_date >= end_date:
-                st.warning("⚠️ Start date must be before end date!")
-            else:
-                st.success(f"✅ Date range: {start_date.date()} to {end_date.date()}")
-                
-        except Exception as e:
-            st.error(f"❌ Invalid date format! Use 8 digits (20130101) or YYYY-MM-DD (2013-01-01)")
-            # Fallback to default dates
-            start_date = pd.to_datetime(default_start)
-            end_date = pd.to_datetime(default_end)
-    else:
-        # Custom calendar picker using dropdowns (works on all devices!)
-        st.markdown("**📅 Select dates using dropdowns:**")
-        
-        # Start Date
-        st.write("**Start Date:**")
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            start_year = st.selectbox("Year", range(2000, 2027), index=13, key="start_year")
-        with col2:
-            start_month = st.selectbox("Month", range(1, 13), index=0, key="start_month")
-        with col3:
-            start_day = st.selectbox("Day", range(1, 32), index=0, key="start_day")
-        
-        # End Date
-        st.write("**End Date:**")
-        col4, col5, col6 = st.columns(3)
-        with col4:
-            end_year = st.selectbox("Year", range(2000, 2027), index=26, key="end_year")
-        with col5:
-            today = pd.to_datetime("today")
-            end_month = st.selectbox("Month", range(1, 13), index=today.month-1, key="end_month")
-        with col6:
-            end_day = st.selectbox("Day", range(1, 32), index=today.day-1, key="end_day")
-        
-        # Build dates from selections
-        try:
-            start_date = pd.to_datetime(f"{start_year}-{start_month:02d}-{start_day:02d}")
-            end_date = pd.to_datetime(f"{end_year}-{end_month:02d}-{end_day:02d}")
-            st.success(f"✅ Selected: {start_date.date()} to {end_date.date()}")
-        except:
-            st.error("❌ Invalid date selected!")
-            start_date = pd.to_datetime("2013-01-01")
-            end_date = pd.to_datetime("today")
-    
-    # --- FORM BAŞLANGICI ---
-    with st.form(key='my_form'):
-        st.subheader("Asset Allocation")
-        weights = []
-        if tickers:
-            st.info("Adjust weights below.")
-            for t in tickers:
-                val = st.slider(f"Weight for {t}", 0, 100, 50, key=t)
-                weights.append(val)
-        
-        if sum(weights) > 0:
-            weights = [w / sum(weights) for w in weights]
-        else:
-            weights = [1.0 / len(tickers)] * len(tickers) if tickers else [1.0]
-        
-        run_btn = st.form_submit_button("🚀 Run Analysis", use_container_width=True)
+    benchmark_ticker = st.text_input("Benchmark", "SPY").upper()
 
-# --- Analysis Logic ---
-if run_btn:
-    if not tickers:
-        st.error("Please enter at least one stock ticker.")
-    else:
-        try:
-            with st.spinner("Fetching data..."):
-                raw_data, bench_raw = get_stock_data(tickers, benchmark, start_date, end_date)
+# --- MAIN AREA ---
+st.markdown("### 🔄 Transaction-Based Portfolio Builder")
+st.caption("Define your portfolio by entering transactions. The system automatically manages portfolio composition over time.")
+
+# Initialize transaction data in session state
+if 'transactions' not in st.session_state:
+    st.session_state.transactions = pd.DataFrame({
+        'Date': ['2015-01-01', '2017-02-05', '2020-03-15'],
+        'Action': ['Initial', 'Sell & Buy', 'Buy'],
+        'Sell': ['', 'MSFT', ''],
+        'Buy': ['AAPL, NVDA, MSFT', 'INTC', 'GOOGL'],
+        'Notes': ['Starting portfolio', 'Replaced MSFT with INTC', 'Added GOOGL']
+    })
+
+# Transaction Editor
+st.markdown("#### 📝 Transaction Log")
+st.caption("Edit the table below to define your portfolio changes. Dates must be chronological.")
+
+edited_df = st.data_editor(
+    st.session_state.transactions,
+    num_rows="dynamic",
+    use_container_width=True,
+    column_config={
+        "Date": st.column_config.TextColumn("Date", help="YYYY-MM-DD format", required=True),
+        "Action": st.column_config.SelectboxColumn(
+            "Action",
+            options=["Initial", "Buy", "Sell", "Sell & Buy", "Rebalance"],
+            required=True
+        ),
+        "Sell": st.column_config.TextColumn("Sell Tickers", help="Stocks to sell (comma-separated)"),
+        "Buy": st.column_config.TextColumn("Buy Tickers", help="Stocks to buy (comma-separated)"),
+        "Notes": st.column_config.TextColumn("Notes", help="Optional description")
+    },
+    hide_index=False
+)
+
+# Update session state
+st.session_state.transactions = edited_df
+
+# Quick Add Buttons
+st.markdown("#### ⚡ Quick Actions")
+col1, col2, col3, col4 = st.columns(4)
+
+if col1.button("➕ Add Row", use_container_width=True):
+    new_row = pd.DataFrame({
+        'Date': [str(pd.to_datetime("today").date())],
+        'Action': ['Buy'],
+        'Sell': [''],
+        'Buy': [''],
+        'Notes': ['']
+    })
+    st.session_state.transactions = pd.concat([st.session_state.transactions, new_row], ignore_index=True)
+    st.rerun()
+
+if col2.button("🗑️ Clear All", use_container_width=True):
+    st.session_state.transactions = pd.DataFrame({
+        'Date': [], 'Action': [], 'Sell': [], 'Buy': [], 'Notes': []
+    })
+    st.rerun()
+
+if col3.button("📋 Example 1: Tech Growth", use_container_width=True):
+    st.session_state.transactions = pd.DataFrame({
+        'Date': ['2015-01-01', '2017-02-05', '2020-03-15', '2022-01-10'],
+        'Action': ['Initial', 'Sell & Buy', 'Buy', 'Rebalance'],
+        'Sell': ['', 'MSFT', '', ''],
+        'Buy': ['AAPL, NVDA, MSFT', 'INTC', 'GOOGL', 'AAPL, NVDA, GOOGL, TSLA'],
+        'Notes': ['Start', 'Swap MSFT→INTC', 'Add GOOGL', 'Equal weight 4 stocks']
+    })
+    st.rerun()
+
+if col4.button("📋 Example 2: Value Play", use_container_width=True):
+    st.session_state.transactions = pd.DataFrame({
+        'Date': ['2016-01-01', '2018-06-15', '2021-09-20'],
+        'Action': ['Initial', 'Buy', 'Sell & Buy'],
+        'Sell': ['', '', 'BRK.B'],
+        'Buy': ['BRK.B, JPM, JNJ', 'V', 'META'],
+        'Notes': ['Value stocks', 'Add Visa', 'Tech pivot']
+    })
+    st.rerun()
+
+st.markdown("---")
+
+# Analysis Button
+run_analysis = st.button("🚀 Run Transaction-Based Analysis", use_container_width=True, type="primary")
+
+# --- ANALYSIS ENGINE ---
+if run_analysis:
+    try:
+        # Validate transactions
+        if st.session_state.transactions.empty:
+            st.error("❌ Please add at least one transaction!")
+            st.stop()
+        
+        with st.spinner("Processing transactions and calculating portfolio performance..."):
             
-            if raw_data.empty or bench_raw.empty:
-                st.error("❌ No data found. Please check your tickers and date range.")
-                st.stop()
+            # Parse transactions into portfolio periods
+            transactions = st.session_state.transactions.copy()
+            transactions['Date'] = pd.to_datetime(transactions['Date'].apply(format_date_input))
+            transactions = transactions.sort_values('Date').reset_index(drop=True)
             
-            # --- Data Processing ---
-            if 'Adj Close' in raw_data.columns:
-                data = raw_data['Adj Close']
-            elif 'Close' in raw_data.columns:
-                data = raw_data['Close']
-            else:
-                data = raw_data
+            # Build portfolio composition timeline
+            portfolio_timeline = []
+            current_holdings = set()
             
-            if 'Adj Close' in bench_raw.columns:
-                bench_data = bench_raw['Adj Close']
-            elif 'Close' in bench_raw.columns:
-                bench_data = bench_raw['Close']
-            else:
-                bench_data = bench_raw
-            
-            if len(tickers) == 1:
-                if isinstance(data, pd.Series):
-                    data = data.to_frame(tickers[0])
-            
-            daily_returns = data.pct_change().dropna()
-            bench_returns = bench_data.pct_change().dropna()
-            
-            common_index = daily_returns.index.intersection(bench_returns.index)
-            daily_returns = daily_returns.loc[common_index]
-            bench_returns = bench_returns.loc[common_index]
-            
-            if daily_returns.empty:
-                st.error("❌ No overlapping data found between portfolio and benchmark.")
-                st.stop()
-            
-            if len(tickers) > 1:
-                portfolio_daily = (daily_returns * weights).sum(axis=1)
-            else:
-                portfolio_daily = daily_returns.iloc[:, 0]
+            for idx, row in transactions.iterrows():
+                trans_date = row['Date']
                 
-            portfolio_cum = (1 + portfolio_daily).cumprod()
+                # Process sells
+                if pd.notna(row['Sell']) and row['Sell'].strip():
+                    sell_tickers = [x.strip().upper() for x in row['Sell'].split(',') if x.strip()]
+                    for ticker in sell_tickers:
+                        current_holdings.discard(ticker)
+                
+                # Process buys
+                if pd.notna(row['Buy']) and row['Buy'].strip():
+                    buy_tickers = [x.strip().upper() for x in row['Buy'].split(',') if x.strip()]
+                    current_holdings.update(buy_tickers)
+                
+                # Handle rebalance (replace all holdings)
+                if row['Action'] == 'Rebalance' and pd.notna(row['Buy']) and row['Buy'].strip():
+                    buy_tickers = [x.strip().upper() for x in row['Buy'].split(',') if x.strip()]
+                    current_holdings = set(buy_tickers)
+                
+                # Record portfolio state
+                if current_holdings:
+                    portfolio_timeline.append({
+                        'start_date': trans_date,
+                        'tickers': list(current_holdings),
+                        'action': row['Action'],
+                        'notes': row['Notes']
+                    })
             
-            if isinstance(bench_returns, pd.DataFrame):
-                bench_returns = bench_returns.iloc[:, 0]
+            if not portfolio_timeline:
+                st.error("❌ No valid portfolio composition found!")
+                st.stop()
+            
+            # Add end dates to each period
+            for i in range(len(portfolio_timeline)):
+                if i < len(portfolio_timeline) - 1:
+                    portfolio_timeline[i]['end_date'] = portfolio_timeline[i + 1]['start_date']
+                else:
+                    portfolio_timeline[i]['end_date'] = global_end
+            
+            # Filter to global date range
+            portfolio_timeline = [p for p in portfolio_timeline if p['start_date'] < global_end]
+            if portfolio_timeline[0]['start_date'] > global_start:
+                st.warning(f"⚠️ First transaction is after start date. Analysis begins from {portfolio_timeline[0]['start_date'].date()}")
+            
+            # Calculate Benchmark
+            bench_data = get_stock_data([benchmark_ticker], global_start, global_end)
+            if bench_data.empty:
+                st.error("❌ No benchmark data!")
+                st.stop()
+            if isinstance(bench_data, pd.DataFrame): 
+                bench_data = bench_data.iloc[:, 0]
+            bench_returns = bench_data.pct_change().dropna()
             bench_cum = (1 + bench_returns).cumprod()
             
+            # Calculate Portfolio Performance (Period by Period)
+            all_cumulative = []
+            all_daily_returns = []
+            current_value = 1.0
+            
+            for period in portfolio_timeline:
+                tickers = period['tickers']
+                start = max(period['start_date'], global_start)
+                end = min(period['end_date'], global_end)
+                
+                # Equal weight for simplicity
+                weights = [1.0/len(tickers)] * len(tickers)
+                
+                # Get data
+                data = get_stock_data(tickers, start, end)
+                if data.empty:
+                    continue
+                
+                daily_returns = data.pct_change().dropna()
+                
+                if len(tickers) > 1:
+                    aligned_weights = [weights[tickers.index(col)] for col in data.columns]
+                    portfolio_daily = (daily_returns * aligned_weights).sum(axis=1)
+                else:
+                    portfolio_daily = daily_returns.iloc[:, 0]
+                
+                portfolio_cum = current_value * (1 + portfolio_daily).cumprod()
+                current_value = portfolio_cum.iloc[-1] if not portfolio_cum.empty else current_value
+                
+                all_cumulative.append(portfolio_cum)
+                all_daily_returns.append(portfolio_daily)
+            
+            # Combine all periods
+            portfolio_cum = pd.concat(all_cumulative)
+            portfolio_cum = portfolio_cum[~portfolio_cum.index.duplicated(keep='last')]
+            portfolio_daily = pd.concat(all_daily_returns)
+            
+            # Align with benchmark
+            common_idx = portfolio_cum.index.intersection(bench_cum.index)
+            portfolio_cum = portfolio_cum.loc[common_idx]
+            bench_cum = bench_cum.loc[common_idx]
+            
+            # Calculate metrics
             total_return = portfolio_cum.iloc[-1] - 1
             bench_total_return = bench_cum.iloc[-1] - 1
             
-            # Calculate CAGR (Compound Annual Growth Rate)
-            num_years = (end_date - start_date).days / 365.25
-            portfolio_cagr = (portfolio_cum.iloc[-1] ** (1 / num_years)) - 1 if num_years > 0 else 0
-            bench_cagr = (bench_cum.iloc[-1] ** (1 / num_years)) - 1 if num_years > 0 else 0
+            years = (global_end - global_start).days / 365.25
+            portfolio_cagr = (portfolio_cum.iloc[-1]**(1/years)) - 1 if years > 0 else 0
+            bench_cagr = (bench_cum.iloc[-1]**(1/years)) - 1 if years > 0 else 0
             
-            # Calculate Max Drawdown
             portfolio_drawdown = calculate_max_drawdown(portfolio_cum)
             bench_drawdown = calculate_max_drawdown(bench_cum)
             
-            # Calculate Sharpe Ratio
             portfolio_sharpe = calculate_sharpe_ratio(portfolio_daily)
             bench_sharpe = calculate_sharpe_ratio(bench_returns)
             
-            # Calculate volatility
-            portfolio_vol = portfolio_daily.std() * (252 ** 0.5)  # Annualized
+            portfolio_vol = portfolio_daily.std() * (252 ** 0.5)
             bench_vol = bench_returns.std() * (252 ** 0.5)
             
-            # --- RESULTS DISPLAY ---
-            st.success("✅ Analysis Complete!")
+            # --- DISPLAY RESULTS ---
+            st.success(f"✅ Analysis Complete! ({len(portfolio_timeline)} portfolio periods)")
             
-            # Metrics Row 1: Returns and CAGR
+            # Metrics
             col1, col2, col3, col4 = st.columns(4)
             col1.metric("Portfolio Return", f"{total_return:.2%}", 
                        delta=f"{(total_return - bench_total_return):.2%} vs Benchmark")
@@ -283,70 +289,84 @@ if run_btn:
             col3.metric("Benchmark Return", f"{bench_total_return:.2%}")
             col4.metric("Benchmark CAGR", f"{bench_cagr:.2%}")
             
-            # Metrics Row 2: Risk Metrics
             col5, col6, col7, col8 = st.columns(4)
             col5.metric("Portfolio Volatility", f"{portfolio_vol:.2%}")
-            col6.metric("Portfolio Sharpe Ratio", f"{portfolio_sharpe:.2f}")
+            col6.metric("Portfolio Sharpe", f"{portfolio_sharpe:.2f}")
             col7.metric("Benchmark Volatility", f"{bench_vol:.2%}")
-            col8.metric("Benchmark Sharpe Ratio", f"{bench_sharpe:.2f}")
+            col8.metric("Benchmark Sharpe", f"{bench_sharpe:.2f}")
             
-            # Metrics Row 3: Drawdown
             col9, col10 = st.columns(2)
             col9.metric("Portfolio Max Drawdown", f"{portfolio_drawdown:.2%}")
             col10.metric("Benchmark Max Drawdown", f"{bench_drawdown:.2%}")
             
             # Chart
-            st.subheader("📊 Growth Chart ($1 Investment)")
-            fig, ax = plt.subplots(figsize=(12, 6))
+            st.subheader("📊 Portfolio Growth Over Time")
+            fig, ax = plt.subplots(figsize=(14, 7))
             ax.plot(portfolio_cum.index, portfolio_cum, label='Your Portfolio', linewidth=2.5, color='#1f77b4')
-            ax.plot(bench_cum.index, bench_cum, label=f'Benchmark ({benchmark})', linestyle='--', linewidth=2, color='#ff7f0e')
-            ax.axhline(1.0, color='red', linestyle=':', alpha=0.5, label='Initial Investment')
+            ax.plot(bench_cum.index, bench_cum, label=f'Benchmark ({benchmark_ticker})', 
+                   linestyle='--', linewidth=2, color='#ff7f0e')
+            
+            # Mark transaction dates
+            colors = ['purple', 'green', 'red', 'orange', 'brown', 'pink', 'gray']
+            for idx, period in enumerate(portfolio_timeline[1:], 1):  # Skip first (initial)
+                color = colors[idx % len(colors)]
+                trans_date = period['start_date']
+                ax.axvline(trans_date, color=color, linestyle=':', alpha=0.6, linewidth=1.5)
+                ax.text(trans_date, portfolio_cum.max() * (0.95 - idx*0.03), 
+                       f' {period["action"]}', color=color, rotation=90, fontsize=8)
+            
+            ax.axhline(1.0, color='red', linestyle=':', alpha=0.3)
             ax.set_xlabel('Date', fontsize=12)
             ax.set_ylabel('Portfolio Value ($)', fontsize=12)
-            ax.set_title(f'Portfolio Performance: {start_date.date()} to {end_date.date()}', fontsize=14, fontweight='bold')
+            ax.set_title(f'Transaction-Based Portfolio: {global_start.date()} to {global_end.date()}', 
+                        fontsize=14, fontweight='bold')
             ax.legend(loc='best', fontsize=10)
             ax.grid(True, alpha=0.3, linestyle='--')
             plt.tight_layout()
             st.pyplot(fig)
             
-            # Additional stats in expander
-            with st.expander("📈 See Detailed Statistics"):
+            # Portfolio Timeline Table
+            with st.expander("📋 Portfolio Timeline"):
+                timeline_display = []
+                for p in portfolio_timeline:
+                    timeline_display.append({
+                        'Start Date': p['start_date'].date(),
+                        'End Date': p['end_date'].date(),
+                        'Holdings': ', '.join(p['tickers']),
+                        'Action': p['action'],
+                        'Notes': p['notes']
+                    })
+                st.dataframe(pd.DataFrame(timeline_display), use_container_width=True)
+            
+            # Detailed Stats
+            with st.expander("📈 Detailed Statistics"):
                 stats_col1, stats_col2 = st.columns(2)
                 
                 with stats_col1:
                     st.markdown("**Portfolio Statistics**")
                     st.write(f"• Total Return: {total_return:.2%}")
-                    st.write(f"• CAGR (Annualized): {portfolio_cagr:.2%}")
-                    st.write(f"• Annualized Volatility: {portfolio_vol:.2%}")
+                    st.write(f"• CAGR: {portfolio_cagr:.2%}")
+                    st.write(f"• Volatility: {portfolio_vol:.2%}")
                     st.write(f"• Sharpe Ratio: {portfolio_sharpe:.2f}")
                     st.write(f"• Max Drawdown: {portfolio_drawdown:.2%}")
-                    st.write(f"• Best Day: {portfolio_daily.max():.2%}")
-                    st.write(f"• Worst Day: {portfolio_daily.min():.2%}")
-                    st.write(f"• Time Period: {num_years:.2f} years")
+                    st.write(f"• Transactions: {len(transactions)}")
                 
                 with stats_col2:
                     st.markdown("**Benchmark Statistics**")
                     st.write(f"• Total Return: {bench_total_return:.2%}")
-                    st.write(f"• CAGR (Annualized): {bench_cagr:.2%}")
-                    st.write(f"• Annualized Volatility: {bench_vol:.2%}")
+                    st.write(f"• CAGR: {bench_cagr:.2%}")
+                    st.write(f"• Volatility: {bench_vol:.2%}")
                     st.write(f"• Sharpe Ratio: {bench_sharpe:.2f}")
                     st.write(f"• Max Drawdown: {bench_drawdown:.2%}")
-                    st.write(f"• Best Day: {bench_returns.max():.2%}")
-                    st.write(f"• Worst Day: {bench_returns.min():.2%}")
-                    st.write(f"• Time Period: {num_years:.2f} years")
             
-        except Exception as e:
-            st.error(f"❌ An error occurred: {e}")
-            st.info("💡 Tip: Make sure all ticker symbols are valid and try a different date range.")
+    except Exception as e:
+        st.error(f"❌ Error: {e}")
+        st.exception(e)
 
-# --- Footer ---
+# Footer
 st.markdown("---")
-st.markdown(
-    """
-    <div style='text-align: center; color: #666; font-size: 0.9em;'>
-    📱 Having issues on mobile? Use the <strong>Text Input</strong> date mode above.<br>
-    Built with ❤️ using Streamlit & yfinance
-    </div>
-    """,
-    unsafe_allow_html=True
-)
+st.markdown("""
+<div style='text-align: center; color: #666; font-size: 0.9em;'>
+Transaction-Based Portfolio Analysis | Built with Streamlit & yfinance
+</div>
+""", unsafe_allow_html=True)
