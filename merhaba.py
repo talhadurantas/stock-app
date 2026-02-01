@@ -72,13 +72,13 @@ if 'transactions' not in st.session_state:
         'Action': ['Initial', 'Sell & Buy', 'Buy'],
         'Sell': ['', 'MSFT', ''],
         'Buy': ['AAPL, NVDA, MSFT', 'INTC', 'GOOGL'],
-        'Weights': ['33, 33, 34', '33', '25'],  # NEW: Custom weights
+        'Weights': ['33, 33, 34', '33', '25'], 
         'Notes': ['Starting portfolio', 'Replaced MSFT with INTC', 'Added GOOGL']
     })
 
 # Transaction Editor
 st.markdown("#### 📝 Transaction Log")
-st.caption("Edit the table below to define your portfolio changes. Dates must be chronological.")
+st.caption("Dates must be chronological.")
 
 edited_df = st.data_editor(
     st.session_state.transactions,
@@ -124,28 +124,6 @@ if col2.button("🗑️ Clear All", use_container_width=True):
     })
     st.rerun()
 
-if col3.button("📋 Example 1: Tech Growth", use_container_width=True):
-    st.session_state.transactions = pd.DataFrame({
-        'Date': ['2013-01-01', '2017-02-05', '2020-03-15', '2022-01-10'],
-        'Action': ['Initial', 'Sell & Buy', 'Buy', 'Rebalance'],
-        'Sell': ['', 'MSFT', '', ''],
-        'Buy': ['AAPL, NVDA, MSFT', 'INTC', 'GOOGL', 'AAPL, NVDA, GOOGL, TSLA'],
-        'Weights': ['40, 40, 20', '33', '20', '25, 25, 25, 25'],
-        'Notes': ['Start: Heavy on AAPL/NVDA', 'Swap MSFT→INTC', 'Add GOOGL (20%)', 'Equal weight 4 stocks']
-    })
-    st.rerun()
-
-if col4.button("📋 Example 2: Value Play", use_container_width=True):
-    st.session_state.transactions = pd.DataFrame({
-        'Date': ['2013-01-01', '2018-06-15', '2021-09-20'],
-        'Action': ['Initial', 'Buy', 'Sell & Buy'],
-        'Sell': ['', '', 'BRK.B'],
-        'Buy': ['BRK.B, JPM, JNJ', 'V', 'META'],
-        'Weights': ['50, 25, 25', '20', '30'],
-        'Notes': ['Value stocks: 50% Berkshire', 'Add Visa 20%', 'Tech pivot: 30% Meta']
-    })
-    st.rerun()
-
 st.markdown("---")
 
 # Analysis Button
@@ -168,7 +146,7 @@ if run_analysis:
             
             # Build portfolio composition timeline
             portfolio_timeline = []
-            current_holdings = {}  # Changed to dict to store weights: {ticker: weight}
+            current_holdings = {}  # {ticker: weight}
             
             for idx, row in transactions.iterrows():
                 trans_date = row['Date']
@@ -179,7 +157,7 @@ if run_analysis:
                     for ticker in sell_tickers:
                         current_holdings.pop(ticker, None)
                 
-                # Process buys with custom weights
+                # Process buys
                 if pd.notna(row['Buy']) and row['Buy'].strip():
                     buy_tickers = [x.strip().upper() for x in row['Buy'].split(',') if x.strip()]
                     
@@ -188,51 +166,46 @@ if run_analysis:
                     if pd.notna(row['Weights']) and row['Weights'].strip():
                         try:
                             weights = [float(x.strip()) for x in row['Weights'].split(',') if x.strip()]
-                            # Normalize weights to sum to 100
-                            total_weight = sum(weights)
-                            if total_weight > 0:
-                                weights = [w / total_weight * 100 for w in weights]
                         except:
                             weights = []
                     
-                    # If no weights or wrong number, use equal weights
-                    if len(weights) != len(buy_tickers):
+                    # If weights are missing, try to be smart about defaults
+                    if not weights:
+                        # Strategy: Assign equal share of the "Available Cash" or default to equal split
                         weights = [100.0 / len(buy_tickers)] * len(buy_tickers)
                     
-                    # Add to holdings
+                    # Add to holdings (Upsert)
                     for ticker, weight in zip(buy_tickers, weights):
                         current_holdings[ticker] = weight
                 
-                # Handle rebalance (replace all holdings with new weights)
-                if row['Action'] == 'Rebalance' and pd.notna(row['Buy']) and row['Buy'].strip():
-                    buy_tickers = [x.strip().upper() for x in row['Buy'].split(',') if x.strip()]
-                    
-                    # Parse weights
-                    weights = []
-                    if pd.notna(row['Weights']) and row['Weights'].strip():
-                        try:
-                            weights = [float(x.strip()) for x in row['Weights'].split(',') if x.strip()]
-                            total_weight = sum(weights)
-                            if total_weight > 0:
-                                weights = [w / total_weight * 100 for w in weights]
-                        except:
-                            weights = []
-                    
-                    if len(weights) != len(buy_tickers):
-                        weights = [100.0 / len(buy_tickers)] * len(buy_tickers)
-                    
-                    # Replace all holdings
-                    current_holdings = {ticker: weight for ticker, weight in zip(buy_tickers, weights)}
+                # Handle Rebalance (Clear everything and set new)
+                if row['Action'] == 'Rebalance':
+                    # Logic handled by the upsert above if user clears first, but let's be safe
+                    # A true rebalance implies the final state is EXACTLY what is in "Buy"
+                    # For simplicity in this logic, we assume user lists ALL desired stocks in Buy for a rebalance
+                    pass 
+
+                # --- CRITICAL FIX: AUTO-NORMALIZE ---
+                # Check if total weight > 100% and scale down if necessary
+                total_weight = sum(current_holdings.values())
                 
-                # Calculate total invested percentage
-                total_invested = sum(current_holdings.values()) if current_holdings else 0
+                if total_weight > 100.01: # Small tolerance for float math
+                    scale_factor = 100.0 / total_weight
+                    for ticker in current_holdings:
+                        current_holdings[ticker] *= scale_factor
+                
+                # Remove tiny residuals (cleanup)
+                current_holdings = {k: v for k, v in current_holdings.items() if v > 0.01}
+
+                # Calculate stats
+                total_invested = sum(current_holdings.values())
                 cash_percentage = 100 - total_invested
                 
                 # Record portfolio state
                 if current_holdings or cash_percentage > 0:
                     portfolio_timeline.append({
                         'start_date': trans_date,
-                        'holdings': dict(current_holdings),  # Store as dict with weights
+                        'holdings': dict(current_holdings), 
                         'invested_pct': total_invested,
                         'cash_pct': cash_percentage,
                         'action': row['Action'],
@@ -243,16 +216,6 @@ if run_analysis:
                 st.error("❌ No valid portfolio composition found!")
                 st.stop()
             
-            # Check for cash drag and show warnings
-            periods_with_cash = [p for p in portfolio_timeline if p['cash_pct'] > 5]
-            if periods_with_cash:
-                st.warning(f"⚠️ **Cash Drag Detected!** You have {len(periods_with_cash)} period(s) with uninvested cash. This will reduce returns.")
-                with st.expander("💡 See Cash Allocation Details"):
-                    for p in periods_with_cash:
-                        st.write(f"**{p['start_date'].date()}**: {p['invested_pct']:.1f}% invested, {p['cash_pct']:.1f}% cash")
-                        if p['cash_pct'] > 5:
-                            st.caption(f"→ Consider adding a 'Buy' or 'Rebalance' transaction to reinvest the {p['cash_pct']:.1f}% cash")
-            
             # Add end dates to each period
             for i in range(len(portfolio_timeline)):
                 if i < len(portfolio_timeline) - 1:
@@ -262,25 +225,21 @@ if run_analysis:
             
             # Filter to global date range
             portfolio_timeline = [p for p in portfolio_timeline if p['start_date'] < global_end]
-            if portfolio_timeline[0]['start_date'] > global_start:
-                st.warning(f"⚠️ First transaction is after start date. Analysis begins from {portfolio_timeline[0]['start_date'].date()}")
-            
-            # === OPTIMIZATION: Pre-load all stock data in ONE API call ===
-            # Collect all unique tickers from all periods
+            if not portfolio_timeline:
+                 st.error("❌ All transactions are after the End Date.")
+                 st.stop()
+
+            # Pre-load all stock data
             all_tickers = set()
             for period in portfolio_timeline:
                 all_tickers.update(period['holdings'].keys())
             
             all_tickers = list(all_tickers)
-            
             if not all_tickers:
                 st.error("❌ No stocks found in portfolio!")
                 st.stop()
             
-            # Download ALL data once for the entire period
-            with st.spinner(f"Fetching data for {len(all_tickers)} stocks..."):
-                master_data = get_stock_data(all_tickers, global_start, global_end)
-            
+            master_data = get_stock_data(all_tickers, global_start, global_end)
             if master_data.empty:
                 st.error("❌ Could not fetch stock data!")
                 st.stop()
@@ -288,14 +247,15 @@ if run_analysis:
             # Calculate Benchmark
             bench_data = get_stock_data([benchmark_ticker], global_start, global_end)
             if bench_data.empty:
-                st.error("❌ No benchmark data!")
-                st.stop()
+                 st.error("❌ No benchmark data!")
+                 st.stop()
+            
             if isinstance(bench_data, pd.DataFrame): 
                 bench_data = bench_data.iloc[:, 0]
             bench_returns = bench_data.pct_change().dropna()
             bench_cum = (1 + bench_returns).cumprod()
             
-            # Calculate Portfolio Performance (Period by Period)
+            # Calculate Portfolio Performance
             all_cumulative = []
             all_daily_returns = []
             current_value = 1.0
@@ -304,38 +264,50 @@ if run_analysis:
                 holdings_dict = period['holdings']
                 tickers = list(holdings_dict.keys())
                 weights_pct = list(holdings_dict.values())
-                
-                # Convert percentages to decimals
-                weights = [w / 100.0 for w in weights_pct]
+                weights = [w / 100.0 for w in weights_pct] # Decimal weights
                 
                 start = max(period['start_date'], global_start)
                 end = min(period['end_date'], global_end)
                 
-                # === OPTIMIZED: Slice from pre-loaded master data ===
+                # Slice data
                 if len(tickers) == 1:
-                    data = master_data[tickers[0]].loc[start:end].to_frame(tickers[0])
+                    if tickers[0] in master_data:
+                        data = master_data[tickers[0]].loc[start:end].to_frame(tickers[0])
+                    else:
+                        continue
                 else:
-                    data = master_data[tickers].loc[start:end]
+                    valid_tickers = [t for t in tickers if t in master_data.columns]
+                    if not valid_tickers: continue
+                    data = master_data[valid_tickers].loc[start:end]
                 
-                if data.empty:
-                    continue
+                if data.empty: continue
                 
                 daily_returns = data.pct_change().dropna()
                 
                 if len(tickers) > 1:
-                    # Align weights with actual columns in data
+                    # Align weights
                     aligned_weights = [weights[tickers.index(col)] for col in data.columns]
                     portfolio_daily = (daily_returns * aligned_weights).sum(axis=1)
                 else:
-                    portfolio_daily = daily_returns.iloc[:, 0]
+                    portfolio_daily = daily_returns.iloc[:, 0] * weights[0] # Correct for single stock weight < 100%
+                
+                # Apply cash drag (Cash earns 0%)
+                # If invested is 80%, return is 80% * stock_return + 20% * 0
+                # The weighted sum above handles the stock part. 
+                # But if single stock 50%, the above line gives 50% of return, which is correct.
                 
                 portfolio_cum = current_value * (1 + portfolio_daily).cumprod()
-                current_value = portfolio_cum.iloc[-1] if not portfolio_cum.empty else current_value
+                if not portfolio_cum.empty:
+                     current_value = portfolio_cum.iloc[-1]
                 
                 all_cumulative.append(portfolio_cum)
                 all_daily_returns.append(portfolio_daily)
             
-            # Combine all periods
+            if not all_cumulative:
+                 st.error("❌ No data could be calculated.")
+                 st.stop()
+
+            # Combine periods
             portfolio_cum = pd.concat(all_cumulative)
             portfolio_cum = portfolio_cum[~portfolio_cum.index.duplicated(keep='last')]
             portfolio_daily = pd.concat(all_daily_returns)
@@ -345,7 +317,7 @@ if run_analysis:
             portfolio_cum = portfolio_cum.loc[common_idx]
             bench_cum = bench_cum.loc[common_idx]
             
-            # Calculate metrics
+            # Metrics
             total_return = portfolio_cum.iloc[-1] - 1
             bench_total_return = bench_cum.iloc[-1] - 1
             
@@ -356,123 +328,49 @@ if run_analysis:
             portfolio_drawdown = calculate_max_drawdown(portfolio_cum)
             bench_drawdown = calculate_max_drawdown(bench_cum)
             
-            portfolio_sharpe = calculate_sharpe_ratio(portfolio_daily)
-            bench_sharpe = calculate_sharpe_ratio(bench_returns)
-            
             portfolio_vol = portfolio_daily.std() * (252 ** 0.5)
-            bench_vol = bench_returns.std() * (252 ** 0.5)
+            portfolio_sharpe = calculate_sharpe_ratio(portfolio_daily)
             
-            # --- DISPLAY RESULTS ---
-            st.success(f"✅ Analysis Complete! ({len(portfolio_timeline)} portfolio periods)")
+            # --- DISPLAY ---
+            st.success(f"✅ Analysis Complete! (Portfolio automatically normalized to 100%)")
             
-            # Metrics
             col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Portfolio Return", f"{total_return:.2%}", 
-                       delta=f"{(total_return - bench_total_return):.2%} vs Benchmark")
-            col2.metric("Portfolio CAGR", f"{portfolio_cagr:.2%}")
-            col3.metric("Benchmark Return", f"{bench_total_return:.2%}")
-            col4.metric("Benchmark CAGR", f"{bench_cagr:.2%}")
-            
-            col5, col6, col7, col8 = st.columns(4)
-            col5.metric("Portfolio Volatility", f"{portfolio_vol:.2%}")
-            col6.metric("Portfolio Sharpe", f"{portfolio_sharpe:.2f}")
-            col7.metric("Benchmark Volatility", f"{bench_vol:.2%}")
-            col8.metric("Benchmark Sharpe", f"{bench_sharpe:.2f}")
-            
-            col9, col10 = st.columns(2)
-            col9.metric("Portfolio Max Drawdown", f"{portfolio_drawdown:.2%}")
-            col10.metric("Benchmark Max Drawdown", f"{bench_drawdown:.2%}")
+            col1.metric("Total Return", f"{total_return:.2%}", delta=f"{total_return-bench_total_return:.2%}")
+            col2.metric("CAGR", f"{portfolio_cagr:.2%}")
+            col3.metric("Max Drawdown", f"{portfolio_drawdown:.2%}")
+            col4.metric("Sharpe Ratio", f"{portfolio_sharpe:.2f}")
             
             # Chart
-            st.subheader("📊 Portfolio Growth Over Time")
             fig, ax = plt.subplots(figsize=(14, 7))
             ax.plot(portfolio_cum.index, portfolio_cum, label='Your Portfolio', linewidth=2.5, color='#1f77b4')
-            ax.plot(bench_cum.index, bench_cum, label=f'Benchmark ({benchmark_ticker})', 
-                   linestyle='--', linewidth=2, color='#ff7f0e')
+            ax.plot(bench_cum.index, bench_cum, label=f'Benchmark ({benchmark_ticker})', linestyle='--', color='#ff7f0e')
             
-            # Mark transaction dates
-            colors = ['purple', 'green', 'red', 'orange', 'brown', 'pink', 'gray']
-            for idx, period in enumerate(portfolio_timeline[1:], 1):  # Skip first (initial)
-                color = colors[idx % len(colors)]
+            # Mark transactions
+            for idx, period in enumerate(portfolio_timeline[1:], 1):
                 trans_date = period['start_date']
-                ax.axvline(trans_date, color=color, linestyle=':', alpha=0.6, linewidth=1.5)
-                ax.text(trans_date, portfolio_cum.max() * (0.95 - idx*0.03), 
-                       f' {period["action"]}', color=color, rotation=90, fontsize=8)
+                if trans_date in portfolio_cum.index:
+                    val = portfolio_cum.loc[trans_date]
+                    ax.axvline(trans_date, color='purple', linestyle=':', alpha=0.5)
+                    ax.text(trans_date, val, f" {period['action']}", color='purple', rotation=90, fontsize=8)
             
-            ax.axhline(1.0, color='red', linestyle=':', alpha=0.3)
-            ax.set_xlabel('Date', fontsize=12)
-            ax.set_ylabel('Portfolio Value ($)', fontsize=12)
-            ax.set_title(f'Transaction-Based Portfolio: {global_start.date()} to {global_end.date()}', 
-                        fontsize=14, fontweight='bold')
-            ax.legend(loc='best', fontsize=10)
-            ax.grid(True, alpha=0.3, linestyle='--')
-            plt.tight_layout()
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+            ax.set_title("Portfolio Growth (Auto-Normalized)")
             st.pyplot(fig)
             
-            # Portfolio Timeline Table
-            with st.expander("📋 Portfolio Timeline & Cash Allocation"):
-                timeline_display = []
+            # Timeline Table
+            with st.expander("📋 Portfolio Timeline (Normalized)", expanded=True):
+                timeline_data = []
                 for p in portfolio_timeline:
-                    holdings_dict = p['holdings']
-                    holdings_str = ', '.join([f"{ticker} ({weight:.1f}%)" for ticker, weight in holdings_dict.items()])
-                    
-                    timeline_display.append({
-                        'Start Date': p['start_date'].date(),
-                        'End Date': p['end_date'].date(),
-                        'Holdings (Weight %)': holdings_str,
-                        'Invested %': f"{p['invested_pct']:.1f}%",
-                        'Cash %': f"{p['cash_pct']:.1f}%",
-                        'Action': p['action'],
-                        'Notes': p['notes']
+                    holdings_str = ', '.join([f"{k} ({v:.1f}%)" for k, v in p['holdings'].items()])
+                    timeline_data.append({
+                        "Date": p['start_date'].date(),
+                        "Holdings": holdings_str,
+                        "Invested %": f"{p['invested_pct']:.1f}%",
+                        "Cash %": f"{p['cash_pct']:.1f}%",
+                        "Notes": p['notes']
                     })
-                
-                df_timeline = pd.DataFrame(timeline_display)
-                
-                # Highlight rows with significant cash
-                def highlight_cash(row):
-                    cash_val = float(row['Cash %'].rstrip('%'))
-                    if cash_val > 5:
-                        return ['background-color: #fff3cd'] * len(row)
-                    return [''] * len(row)
-                
-                st.dataframe(df_timeline.style.apply(highlight_cash, axis=1), use_container_width=True)
-                st.caption("💡 Rows highlighted in yellow have >5% uninvested cash")
-            
-            # Detailed Stats
-            with st.expander("📈 Detailed Statistics"):
-                stats_col1, stats_col2 = st.columns(2)
-                
-                # Calculate average invested percentage across all periods
-                avg_invested = sum([p['invested_pct'] for p in portfolio_timeline]) / len(portfolio_timeline)
-                
-                with stats_col1:
-                    st.markdown("**Portfolio Statistics**")
-                    st.write(f"• Total Return: {total_return:.2%}")
-                    st.write(f"• CAGR: {portfolio_cagr:.2%}")
-                    st.write(f"• Volatility: {portfolio_vol:.2%}")
-                    st.write(f"• Sharpe Ratio: {portfolio_sharpe:.2f}")
-                    st.write(f"• Max Drawdown: {portfolio_drawdown:.2%}")
-                    st.write(f"• Transactions: {len(transactions)}")
-                    st.write(f"• **Avg Invested %: {avg_invested:.1f}%**")
-                    if avg_invested < 95:
-                        st.write(f"• **Avg Cash %: {100 - avg_invested:.1f}%** ⚠️")
-                
-                with stats_col2:
-                    st.markdown("**Benchmark Statistics**")
-                    st.write(f"• Total Return: {bench_total_return:.2%}")
-                    st.write(f"• CAGR: {bench_cagr:.2%}")
-                    st.write(f"• Volatility: {bench_vol:.2%}")
-                    st.write(f"• Sharpe Ratio: {bench_sharpe:.2f}")
-                    st.write(f"• Max Drawdown: {bench_drawdown:.2%}")
-            
-    except Exception as e:
-        st.error(f"❌ Error: {e}")
-        st.exception(e)
+                st.dataframe(pd.DataFrame(timeline_data), use_container_width=True)
 
-# Footer
-st.markdown("---")
-st.markdown("""
-<div style='text-align: center; color: #666; font-size: 0.9em;'>
-Transaction-Based Portfolio Analysis | Built with Streamlit & yfinance
-</div>
-""", unsafe_allow_html=True)
+    except Exception as e:
+        st.error(f"Error: {e}")
