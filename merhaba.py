@@ -297,10 +297,19 @@ st.markdown("---")
 # Transaction table editor
 st.markdown("#### 📝 Transaction Log")
 
+# --- FIX: CALLBACK FUNCTION TO SYNC STATE INSTANTLY ---
+def sync_transactions():
+    """Syncs the editor state to the main variable to prevent reset bug"""
+    st.session_state.transactions = st.session_state.editor_key
+
 edited_df = st.data_editor(
     st.session_state.transactions,
     num_rows="dynamic",
     use_container_width=True,
+    # --- FIX: ADDED KEY AND CALLBACK ---
+    key="editor_key",
+    on_change=sync_transactions,
+    # -----------------------------------
     column_config={
         "Date": st.column_config.TextColumn(
             "Date",
@@ -339,8 +348,9 @@ edited_df = st.data_editor(
     hide_index=False
 )
 
-# Update session state
-st.session_state.transactions = edited_df
+# --- FIX: REMOVED THE MANUAL ASSIGNMENT LINE BELOW ---
+# st.session_state.transactions = edited_df 
+# The callback 'sync_transactions' now handles this automatically and correctly.
 
 # ============================================================================
 # VALIDATION SYSTEM
@@ -672,11 +682,11 @@ if run_analysis:
                 
                 # Re-calculation for clarity:
                 if len(tickers) > 1:
-                     # This gives return contribution of stocks
-                     # e.g. Stock A returns 1%, weight 0.25 -> contributes 0.25%
-                     stock_contribution = (daily_returns * [weights[tickers.index(col)] for col in data.columns]).sum(axis=1)
+                      # This gives return contribution of stocks
+                      # e.g. Stock A returns 1%, weight 0.25 -> contributes 0.25%
+                      stock_contribution = (daily_returns * [weights[tickers.index(col)] for col in data.columns]).sum(axis=1)
                 else:
-                     stock_contribution = daily_returns.iloc[:, 0] * weights[0]
+                      stock_contribution = daily_returns.iloc[:, 0] * weights[0]
                 
                 # Total Return = Stock Contribution + Cash Contribution
                 portfolio_daily = stock_contribution + (cash_daily_return * cash_weight)
@@ -758,6 +768,11 @@ if run_analysis:
             avg_invested = sum([p['invested_pct'] for p in portfolio_timeline]) / len(portfolio_timeline)
             avg_cash = 100 - avg_invested
             
+            # Comparison
+            excess_return = total_return - bench_total_return
+            excess_cagr = portfolio_cagr - bench_cagr
+            excess_sharpe = portfolio_sharpe - bench_sharpe
+
         # ================================================================
         # DISPLAY RESULTS
         # ================================================================
