@@ -507,17 +507,6 @@ if run_analysis:
                     for ticker, weight in zip(buy_tickers, weights):
                         current_holdings[ticker] = weight
                 
-                # --- FIX: AUTO-NORMALIZE (Prevent Negative Cash) ---
-                # This ensures weights never exceed 100%
-                total_held_weight = sum(current_holdings.values())
-                if total_held_weight > 100.01: # Tolerance for float
-                    scale_factor = 100.0 / total_held_weight
-                    for ticker in current_holdings:
-                        current_holdings[ticker] *= scale_factor
-                
-                # Cleanup tiny residuals
-                current_holdings = {k: v for k, v in current_holdings.items() if v > 0.01}
-                
                 # Calculate total invested percentage
                 total_invested = sum(current_holdings.values()) if current_holdings else 0
                 cash_percentage = 100 - total_invested
@@ -561,13 +550,9 @@ if run_analysis:
             # Filter to global date range
             portfolio_timeline = [p for p in portfolio_timeline if p['start_date'] < global_end]
             
-            if portfolio_timeline and portfolio_timeline[0]['start_date'] > global_start:
+            if portfolio_timeline[0]['start_date'] > global_start:
                 st.info(f"ℹ️ First transaction is after start date. Analysis begins from {portfolio_timeline[0]['start_date'].date()}")
             
-            if not portfolio_timeline:
-                 st.error("❌ All transactions are after the End Date.")
-                 st.stop()
-
             # ================================================================
             # STEP 4: Pre-load all stock data (OPTIMIZATION)
             # ================================================================
@@ -629,14 +614,9 @@ if run_analysis:
                 # Slice from pre-loaded master data
                 try:
                     if len(tickers) == 1:
-                        if tickers[0] in master_data.columns:
-                            data = master_data[tickers[0]].loc[start:end].to_frame(tickers[0])
-                        else:
-                            continue
+                        data = master_data[tickers[0]].loc[start:end].to_frame(tickers[0])
                     else:
-                        valid_tickers = [t for t in tickers if t in master_data.columns]
-                        if not valid_tickers: continue
-                        data = master_data[valid_tickers].loc[start:end]
+                        data = master_data[tickers].loc[start:end]
                 except:
                     continue
                 
@@ -647,39 +627,17 @@ if run_analysis:
                 daily_returns = data.pct_change().dropna()
                 
                 if len(tickers) > 1:
-                    # Align weights with available columns
                     aligned_weights = [weights[tickers.index(col)] for col in data.columns]
                     stock_portfolio_daily = (daily_returns * aligned_weights).sum(axis=1)
                 else:
-                    # If single stock is < 100% of portfolio, we must account for its weight
-                    # NOTE: Previous logic assumed sum(weights)=1. Here weights[0] might be 0.5
-                    # So we multiply return by weight[0] relative to stock portion?
-                    # No, simplest way: Just multiply return by weight if it's the only asset class component.
-                    # But better: weight[0] is portion of Total Portfolio.
-                    # stock_return * weight + cash_return * cash_weight
                     stock_portfolio_daily = daily_returns.iloc[:, 0]
                 
                 # Add cash interest (converted to daily rate)
                 daily_cash_rate = (1 + cash_interest_rate / 100) ** (1 / 252) - 1
                 cash_daily_return = pd.Series(daily_cash_rate, index=stock_portfolio_daily.index)
                 
-                # Combined portfolio return = (Stock Return * Stock Weight) + (Cash Return * Cash Weight)
-                # Note: The 'stock_portfolio_daily' calculated above for >1 stocks was already weighted sum of stocks.
-                # But those weights summed to 'total_invested'. 
-                # We need to be careful: 
-                # If weights were [0.5, 0.5], sum is 1.0. Invested is 100%.
-                # If weights were [0.25, 0.25], sum is 0.5. Invested is 50%.
-                
-                # Re-calculation for clarity:
-                if len(tickers) > 1:
-                     # This gives return contribution of stocks
-                     # e.g. Stock A returns 1%, weight 0.25 -> contributes 0.25%
-                     stock_contribution = (daily_returns * [weights[tickers.index(col)] for col in data.columns]).sum(axis=1)
-                else:
-                     stock_contribution = daily_returns.iloc[:, 0] * weights[0]
-                
-                # Total Return = Stock Contribution + Cash Contribution
-                portfolio_daily = stock_contribution + (cash_daily_return * cash_weight)
+                # Combined portfolio return = stock returns + cash returns
+                portfolio_daily = stock_portfolio_daily * (1 - cash_weight) + cash_daily_return * cash_weight
                 
                 # Calculate cumulative returns for this period
                 portfolio_cum = current_value * (1 + portfolio_daily).cumprod()
@@ -695,10 +653,6 @@ if run_analysis:
             # STEP 6: Combine all periods
             # ================================================================
             
-            if not all_cumulative:
-                 st.error("❌ No data could be calculated.")
-                 st.stop()
-
             portfolio_cum = pd.concat(all_cumulative)
             portfolio_cum = portfolio_cum[~portfolio_cum.index.duplicated(keep='last')]
             portfolio_daily = pd.concat(all_daily_returns)
@@ -1036,6 +990,10 @@ if run_analysis:
                 
                 st.write(f"")
                 st.write(f"**Comparison vs Portfolio:**")
+                excess_return = total_return - bench_total_return
+                excess_cagr = portfolio_cagr - bench_cagr
+                excess_sharpe = portfolio_sharpe - bench_sharpe
+                
                 st.write(f"• Excess Return: {excess_return:+.2%}")
                 st.write(f"• Excess CAGR: {excess_cagr:+.2%}")
                 st.write(f"• Excess Sharpe: {excess_sharpe:+.2f}")
@@ -1371,9 +1329,9 @@ TRANSACTION HISTORY
 st.markdown("---")
 st.markdown("""
 <div style='text-align: center; color: #666; font-size: 0.9em; padding: 20px;'>
-    <strong>Professional Portfolio Visualizer v3.1 - Transaction Mode</strong><br>
+    <strong>Professional Portfolio Visualizer v3.0 - Transaction Mode</strong><br>
     Built with ❤️ using Streamlit & yfinance<br>
-    <strong>NEW in v3.1:</strong> Auto-Normalization Fixed • Cash Interest • Monthly Heatmaps • Risk Analysis • CSV Export<br>
+    <strong>NEW in v3.0:</strong> Cash Interest Tracking • Monthly Heatmaps • Risk Analysis (VaR/CVaR) • CSV/TXT Export • Benchmark Rolling Charts<br>
     Multi-period analysis with cash tracking & comprehensive risk metrics<br>
     <em>For educational purposes only. Not financial advice.</em>
 </div>
