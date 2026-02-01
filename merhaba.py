@@ -232,10 +232,25 @@ with st.sidebar:
     ).upper()
     
     st.markdown("---")
+    st.markdown("### 💵 Cash Settings")
+    
+    cash_interest_rate = st.number_input(
+        "Cash Interest Rate (Annual %)",
+        min_value=0.0,
+        max_value=10.0,
+        value=4.5,
+        step=0.1,
+        help="Interest rate earned on uninvested cash (e.g., money market fund). Currently ~4-5% in 2024-2025."
+    )
+    
+    st.caption(f"💡 Cash will earn {cash_interest_rate:.2f}% annually when not invested in stocks")
+    
+    st.markdown("---")
     st.markdown("### 🎨 Display Options")
     
     show_transaction_markers = st.checkbox("Show transaction markers on chart", value=True)
     show_drawdown_period = st.checkbox("Highlight max drawdown period", value=False)
+    show_benchmark_rolling = st.checkbox("Show benchmark on rolling charts", value=True)
 
 # ============================================================================
 # MAIN CONTENT - TRANSACTION TABLE
@@ -590,6 +605,9 @@ if run_analysis:
                 weights_pct = list(holdings_dict.values())
                 weights = [w / 100.0 for w in weights_pct]
                 
+                # Calculate cash position
+                cash_weight = period['cash_pct'] / 100.0
+                
                 start = max(period['start_date'], global_start)
                 end = min(period['end_date'], global_end)
                 
@@ -605,14 +623,21 @@ if run_analysis:
                 if data.empty:
                     continue
                 
-                # Calculate returns
+                # Calculate stock returns
                 daily_returns = data.pct_change().dropna()
                 
                 if len(tickers) > 1:
                     aligned_weights = [weights[tickers.index(col)] for col in data.columns]
-                    portfolio_daily = (daily_returns * aligned_weights).sum(axis=1)
+                    stock_portfolio_daily = (daily_returns * aligned_weights).sum(axis=1)
                 else:
-                    portfolio_daily = daily_returns.iloc[:, 0]
+                    stock_portfolio_daily = daily_returns.iloc[:, 0]
+                
+                # Add cash interest (converted to daily rate)
+                daily_cash_rate = (1 + cash_interest_rate / 100) ** (1 / 252) - 1
+                cash_daily_return = pd.Series(daily_cash_rate, index=stock_portfolio_daily.index)
+                
+                # Combined portfolio return = stock returns + cash returns
+                portfolio_daily = stock_portfolio_daily * (1 - cash_weight) + cash_daily_return * cash_weight
                 
                 # Calculate cumulative returns for this period
                 portfolio_cum = current_value * (1 + portfolio_daily).cumprod()
@@ -979,6 +1004,118 @@ if run_analysis:
                     st.error("❌ Portfolio underperformed benchmark")
         
         # ================================================================
+        # PDF EXPORT FEATURE
+        # ================================================================
+        
+        st.markdown("---")
+        st.markdown("### 📄 Export Report")
+        
+        col_exp1, col_exp2, col_exp3 = st.columns(3)
+        
+        with col_exp1:
+            # Export data as CSV
+            export_data = pd.DataFrame({
+                'Date': portfolio_cum.index,
+                'Portfolio Value': portfolio_cum.values,
+                'Benchmark Value': bench_cum.values,
+                'Portfolio Daily Return': portfolio_daily.values,
+                'Benchmark Daily Return': bench_returns.values
+            })
+            
+            csv = export_data.to_csv(index=False)
+            
+            st.download_button(
+                label="📊 Download Data (CSV)",
+                data=csv,
+                file_name=f"portfolio_analysis_{global_start.date()}_to_{global_end.date()}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+        
+        with col_exp2:
+            # Export transactions as CSV
+            transactions_csv = transactions.to_csv(index=False)
+            
+            st.download_button(
+                label="📋 Download Transactions (CSV)",
+                data=transactions_csv,
+                file_name=f"portfolio_transactions_{global_start.date()}_to_{global_end.date()}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+        
+        with col_exp3:
+            # Generate summary text report
+            report_text = f"""PORTFOLIO ANALYSIS REPORT
+Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+Analysis Period: {global_start.date()} to {global_end.date()}
+
+{'='*60}
+PORTFOLIO PERFORMANCE
+{'='*60}
+Total Return:           {total_return:.2%}
+CAGR:                   {portfolio_cagr:.2%}
+Volatility (Annual):    {portfolio_vol:.2%}
+Max Drawdown:           {portfolio_drawdown:.2%}
+Sharpe Ratio:           {portfolio_sharpe:.2f}
+Sortino Ratio:          {portfolio_sortino:.2f}
+Calmar Ratio:           {portfolio_calmar:.2f}
+Win Rate:               {portfolio_win_rate:.1f}%
+Best Day:               {portfolio_best_day:.2%}
+Worst Day:              {portfolio_worst_day:.2%}
+
+{'='*60}
+BENCHMARK PERFORMANCE ({benchmark_ticker})
+{'='*60}
+Total Return:           {bench_total_return:.2%}
+CAGR:                   {bench_cagr:.2%}
+Volatility (Annual):    {bench_vol:.2%}
+Max Drawdown:           {bench_drawdown:.2%}
+Sharpe Ratio:           {bench_sharpe:.2f}
+Sortino Ratio:          {bench_sortino:.2f}
+Calmar Ratio:           {bench_calmar:.2f}
+Win Rate:               {bench_win_rate:.1f}%
+
+{'='*60}
+PORTFOLIO vs BENCHMARK
+{'='*60}
+Excess Return:          {excess_return:+.2%}
+Excess CAGR:            {excess_cagr:+.2%}
+Excess Sharpe:          {excess_sharpe:+.2f}
+Result:                 {'Outperformed' if excess_return > 0 else 'Underperformed'}
+
+{'='*60}
+PORTFOLIO COMPOSITION
+{'='*60}
+Total Transactions:     {len(transactions)}
+Portfolio Periods:      {len(portfolio_timeline)}
+Unique Stocks:          {len(all_tickers)}
+Avg Invested:           {avg_invested:.1f}%
+Cash Interest Rate:     {cash_interest_rate:.2f}%
+
+{'='*60}
+TRANSACTION HISTORY
+{'='*60}
+"""
+            for idx, t in transactions.iterrows():
+                report_text += f"\n{t['Date'].date()} | {t['Action']:12} | Buy: {t['Buy']:20} | Sell: {t['Sell']:20}"
+            
+            report_text += f"\n\n{'='*60}\n"
+            report_text += "This report is for informational purposes only.\n"
+            report_text += "Not financial advice. Past performance does not guarantee future results.\n"
+            report_text += "{'='*60}\n"
+            
+            st.download_button(
+                label="📄 Download Report (TXT)",
+                data=report_text,
+                file_name=f"portfolio_report_{global_start.date()}_to_{global_end.date()}.txt",
+                mime="text/plain",
+                use_container_width=True
+            )
+        
+        st.caption("💡 Download your analysis data, transactions, and summary report for record-keeping or further analysis in Excel/Python")
+        
+        # ================================================================
         # ROLLING METRICS
         # ================================================================
         
@@ -988,6 +1125,7 @@ if run_analysis:
             rolling_window = 252  # 1 year
             
             if len(portfolio_daily) > rolling_window:
+                # Portfolio rolling metrics
                 rolling_return = portfolio_cum.pct_change(rolling_window)
                 rolling_vol = portfolio_daily.rolling(rolling_window).std() * (252 ** 0.5)
                 rolling_sharpe = (
@@ -995,35 +1133,189 @@ if run_analysis:
                     (portfolio_daily.rolling(rolling_window).std() * (252 ** 0.5))
                 )
                 
+                # Benchmark rolling metrics (if enabled)
+                if show_benchmark_rolling:
+                    bench_rolling_return = bench_cum.pct_change(rolling_window)
+                    bench_rolling_vol = bench_returns.rolling(rolling_window).std() * (252 ** 0.5)
+                    bench_rolling_sharpe = (
+                        bench_returns.rolling(rolling_window).mean() * 252 / 
+                        (bench_returns.rolling(rolling_window).std() * (252 ** 0.5))
+                    )
+                
                 fig2, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(14, 10))
                 
                 # Rolling Return
-                ax1.plot(rolling_return.index, rolling_return * 100, color='#1f77b4', linewidth=1.5)
+                ax1.plot(rolling_return.index, rolling_return * 100, color='#1f77b4', linewidth=1.5, label='Portfolio')
+                if show_benchmark_rolling:
+                    ax1.plot(bench_rolling_return.index, bench_rolling_return * 100, color='#ff7f0e', linewidth=1.5, linestyle='--', label=f'Benchmark ({benchmark_ticker})')
                 ax1.axhline(0, color='gray', linestyle='--', alpha=0.5)
                 ax1.set_title('Rolling 1-Year Return (%)', fontweight='bold')
                 ax1.set_ylabel('Return (%)')
+                ax1.legend(loc='best')
                 ax1.grid(True, alpha=0.3)
                 
                 # Rolling Volatility
-                ax2.plot(rolling_vol.index, rolling_vol * 100, color='#ff7f0e', linewidth=1.5)
+                ax2.plot(rolling_vol.index, rolling_vol * 100, color='#1f77b4', linewidth=1.5, label='Portfolio')
+                if show_benchmark_rolling:
+                    ax2.plot(bench_rolling_vol.index, bench_rolling_vol * 100, color='#ff7f0e', linewidth=1.5, linestyle='--', label=f'Benchmark ({benchmark_ticker})')
                 ax2.set_title('Rolling 1-Year Volatility (%)', fontweight='bold')
                 ax2.set_ylabel('Volatility (%)')
+                ax2.legend(loc='best')
                 ax2.grid(True, alpha=0.3)
                 
                 # Rolling Sharpe
-                ax3.plot(rolling_sharpe.index, rolling_sharpe, color='#2ca02c', linewidth=1.5)
-                ax3.axhline(1, color='gray', linestyle='--', alpha=0.5, label='Sharpe = 1')
-                ax3.axhline(2, color='gray', linestyle='--', alpha=0.5, label='Sharpe = 2')
+                ax3.plot(rolling_sharpe.index, rolling_sharpe, color='#1f77b4', linewidth=1.5, label='Portfolio')
+                if show_benchmark_rolling:
+                    ax3.plot(bench_rolling_sharpe.index, bench_rolling_sharpe, color='#ff7f0e', linewidth=1.5, linestyle='--', label=f'Benchmark ({benchmark_ticker})')
+                ax3.axhline(1, color='gray', linestyle='--', alpha=0.5)
+                ax3.axhline(2, color='gray', linestyle='--', alpha=0.5)
                 ax3.set_title('Rolling 1-Year Sharpe Ratio', fontweight='bold')
                 ax3.set_ylabel('Sharpe Ratio')
                 ax3.set_xlabel('Date')
-                ax3.legend()
+                ax3.legend(loc='best')
                 ax3.grid(True, alpha=0.3)
                 
                 plt.tight_layout()
                 st.pyplot(fig2)
             else:
                 st.info("ℹ️ Not enough data for rolling metrics (need at least 1 year of daily data)")
+        
+        # ================================================================
+        # MONTHLY RETURNS HEATMAP
+        # ================================================================
+        
+        with st.expander("🔥 Monthly Returns Heatmap", expanded=False):
+            
+            # Calculate monthly returns
+            portfolio_monthly = portfolio_cum.resample('M').last().pct_change() * 100
+            
+            if len(portfolio_monthly) > 12:
+                # Create pivot table for heatmap
+                monthly_data = portfolio_monthly.to_frame('Return')
+                monthly_data['Year'] = monthly_data.index.year
+                monthly_data['Month'] = monthly_data.index.month
+                
+                pivot_table = monthly_data.pivot_table(
+                    values='Return',
+                    index='Year',
+                    columns='Month',
+                    aggfunc='first'
+                )
+                
+                # Month names
+                month_names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
+                              'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+                pivot_table.columns = [month_names[int(m)-1] for m in pivot_table.columns]
+                
+                # Create heatmap
+                fig3, ax = plt.subplots(figsize=(14, max(6, len(pivot_table) * 0.5)))
+                
+                # Color map: red for negative, green for positive
+                cmap = plt.cm.RdYlGn
+                
+                im = ax.imshow(pivot_table.values, cmap=cmap, aspect='auto', vmin=-10, vmax=10)
+                
+                # Set ticks
+                ax.set_xticks(np.arange(len(pivot_table.columns)))
+                ax.set_yticks(np.arange(len(pivot_table.index)))
+                ax.set_xticklabels(pivot_table.columns)
+                ax.set_yticklabels(pivot_table.index)
+                
+                # Add values in cells
+                for i in range(len(pivot_table.index)):
+                    for j in range(len(pivot_table.columns)):
+                        value = pivot_table.values[i, j]
+                        if not np.isnan(value):
+                            text_color = 'white' if abs(value) > 5 else 'black'
+                            ax.text(j, i, f'{value:.1f}%', 
+                                   ha="center", va="center", 
+                                   color=text_color, fontweight='bold')
+                
+                ax.set_title('Monthly Returns Heatmap (%)', fontweight='bold', pad=20)
+                ax.set_xlabel('Month', fontweight='bold')
+                ax.set_ylabel('Year', fontweight='bold')
+                
+                # Colorbar
+                cbar = plt.colorbar(im, ax=ax)
+                cbar.set_label('Return (%)', rotation=270, labelpad=20)
+                
+                plt.tight_layout()
+                st.pyplot(fig3)
+                
+                # Monthly statistics
+                st.markdown("#### 📊 Monthly Performance Statistics")
+                col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+                
+                monthly_avg = portfolio_monthly.mean()
+                monthly_median = portfolio_monthly.median()
+                monthly_best = portfolio_monthly.max()
+                monthly_worst = portfolio_monthly.min()
+                monthly_positive = (portfolio_monthly > 0).sum() / len(portfolio_monthly) * 100
+                
+                col_m1.metric("Avg Monthly Return", f"{monthly_avg:.2f}%")
+                col_m2.metric("Median Monthly Return", f"{monthly_median:.2f}%")
+                col_m3.metric("Best Month", f"{monthly_best:.2f}%")
+                col_m4.metric("Worst Month", f"{monthly_worst:.2f}%")
+                
+                st.write(f"**Positive Months:** {monthly_positive:.1f}% ({(portfolio_monthly > 0).sum()} out of {len(portfolio_monthly)} months)")
+            else:
+                st.info("ℹ️ Not enough data for monthly heatmap (need at least 12 months)")
+        
+        # ================================================================
+        # RISK ANALYSIS
+        # ================================================================
+        
+        with st.expander("⚠️ Risk Analysis & Value at Risk", expanded=False):
+            
+            st.markdown("#### 📉 Value at Risk (VaR) & Conditional VaR")
+            
+            # Calculate VaR at different confidence levels
+            var_95 = np.percentile(portfolio_daily, 5) * 100
+            var_99 = np.percentile(portfolio_daily, 1) * 100
+            
+            # CVaR (Expected Shortfall) - average of losses beyond VaR
+            cvar_95 = portfolio_daily[portfolio_daily <= np.percentile(portfolio_daily, 5)].mean() * 100
+            cvar_99 = portfolio_daily[portfolio_daily <= np.percentile(portfolio_daily, 1)].mean() * 100
+            
+            col_r1, col_r2, col_r3, col_r4 = st.columns(4)
+            
+            col_r1.metric("VaR (95%)", f"{var_95:.2f}%", help="Expected loss in worst 5% of days")
+            col_r2.metric("CVaR (95%)", f"{cvar_95:.2f}%", help="Average loss when exceeding VaR")
+            col_r3.metric("VaR (99%)", f"{var_99:.2f}%", help="Expected loss in worst 1% of days")
+            col_r4.metric("CVaR (99%)", f"{cvar_99:.2f}%", help="Average loss when exceeding VaR")
+            
+            st.caption("💡 VaR: Expected maximum loss at given confidence level. CVaR: Average loss when VaR is exceeded.")
+            
+            st.markdown("---")
+            st.markdown("#### 📊 Return Distribution Analysis")
+            
+            fig4, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+            
+            # Histogram
+            ax1.hist(portfolio_daily * 100, bins=50, color='#1f77b4', alpha=0.7, edgecolor='black')
+            ax1.axvline(portfolio_daily.mean() * 100, color='red', linestyle='--', linewidth=2, label=f'Mean: {portfolio_daily.mean()*100:.2f}%')
+            ax1.axvline(var_95, color='orange', linestyle='--', linewidth=2, label=f'VaR 95%: {var_95:.2f}%')
+            ax1.set_xlabel('Daily Return (%)')
+            ax1.set_ylabel('Frequency')
+            ax1.set_title('Distribution of Daily Returns', fontweight='bold')
+            ax1.legend()
+            ax1.grid(True, alpha=0.3)
+            
+            # Cumulative distribution
+            sorted_returns = np.sort(portfolio_daily * 100)
+            cumulative = np.arange(1, len(sorted_returns) + 1) / len(sorted_returns) * 100
+            
+            ax2.plot(sorted_returns, cumulative, color='#2ca02c', linewidth=2)
+            ax2.axhline(5, color='orange', linestyle='--', alpha=0.7, label='5th Percentile (VaR 95%)')
+            ax2.axhline(1, color='red', linestyle='--', alpha=0.7, label='1st Percentile (VaR 99%)')
+            ax2.set_xlabel('Daily Return (%)')
+            ax2.set_ylabel('Cumulative Probability (%)')
+            ax2.set_title('Cumulative Distribution Function', fontweight='bold')
+            ax2.legend()
+            ax2.grid(True, alpha=0.3)
+            
+            plt.tight_layout()
+            st.pyplot(fig4)
         
     except Exception as e:
         st.error(f"❌ **Analysis Error:** {str(e)}")
@@ -1037,8 +1329,9 @@ if run_analysis:
 st.markdown("---")
 st.markdown("""
 <div style='text-align: center; color: #666; font-size: 0.9em; padding: 20px;'>
-    <strong>Professional Portfolio Visualizer - Transaction Mode</strong><br>
+    <strong>Professional Portfolio Visualizer v3.0 - Transaction Mode</strong><br>
     Built with ❤️ using Streamlit & yfinance<br>
+    <strong>NEW in v3.0:</strong> Cash Interest Tracking • Monthly Heatmaps • Risk Analysis (VaR/CVaR) • CSV/TXT Export • Benchmark Rolling Charts<br>
     Multi-period analysis with cash tracking & comprehensive risk metrics<br>
     <em>For educational purposes only. Not financial advice.</em>
 </div>
