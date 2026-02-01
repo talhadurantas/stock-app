@@ -297,19 +297,11 @@ st.markdown("---")
 # Transaction table editor
 st.markdown("#### 📝 Transaction Log")
 
-# --- FIX: CALLBACK FUNCTION TO SYNC STATE INSTANTLY ---
-def sync_transactions():
-    """Syncs the editor state to the main variable to prevent reset bug"""
-    st.session_state.transactions = st.session_state.editor_key
-
+# --- FIX: DIRECT RERUN ON CHANGE (SOLVES RESET & CRASH) ---
 edited_df = st.data_editor(
     st.session_state.transactions,
     num_rows="dynamic",
     use_container_width=True,
-    # --- FIX: ADDED KEY AND CALLBACK ---
-    key="editor_key",
-    on_change=sync_transactions,
-    # -----------------------------------
     column_config={
         "Date": st.column_config.TextColumn(
             "Date",
@@ -348,9 +340,9 @@ edited_df = st.data_editor(
     hide_index=False
 )
 
-# --- FIX: REMOVED THE MANUAL ASSIGNMENT LINE BELOW ---
-# st.session_state.transactions = edited_df 
-# The callback 'sync_transactions' now handles this automatically and correctly.
+if not edited_df.equals(st.session_state.transactions):
+    st.session_state.transactions = edited_df
+    st.rerun()
 
 # ============================================================================
 # VALIDATION SYSTEM
