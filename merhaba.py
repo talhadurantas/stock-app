@@ -72,6 +72,7 @@ if 'transactions' not in st.session_state:
         'Action': ['Initial', 'Sell & Buy', 'Buy'],
         'Sell': ['', 'MSFT', ''],
         'Buy': ['AAPL, NVDA, MSFT', 'INTC', 'GOOGL'],
+        'Weights': ['33, 33, 34', '33', '25'],  # NEW: Custom weights
         'Notes': ['Starting portfolio', 'Replaced MSFT with INTC', 'Added GOOGL']
     })
 
@@ -92,6 +93,7 @@ edited_df = st.data_editor(
         ),
         "Sell": st.column_config.TextColumn("Sell Tickers", help="Stocks to sell (comma-separated)"),
         "Buy": st.column_config.TextColumn("Buy Tickers", help="Stocks to buy (comma-separated)"),
+        "Weights": st.column_config.TextColumn("Weights %", help="Percentage for each stock in Buy (comma-separated). Leave empty for equal weight."),
         "Notes": st.column_config.TextColumn("Notes", help="Optional description")
     },
     hide_index=False
@@ -110,6 +112,7 @@ if col1.button("➕ Add Row", use_container_width=True):
         'Action': ['Buy'],
         'Sell': [''],
         'Buy': [''],
+        'Weights': [''],
         'Notes': ['']
     })
     st.session_state.transactions = pd.concat([st.session_state.transactions, new_row], ignore_index=True)
@@ -117,7 +120,7 @@ if col1.button("➕ Add Row", use_container_width=True):
 
 if col2.button("🗑️ Clear All", use_container_width=True):
     st.session_state.transactions = pd.DataFrame({
-        'Date': [], 'Action': [], 'Sell': [], 'Buy': [], 'Notes': []
+        'Date': [], 'Action': [], 'Sell': [], 'Buy': [], 'Weights': [], 'Notes': []
     })
     st.rerun()
 
@@ -127,7 +130,8 @@ if col3.button("📋 Example 1: Tech Growth", use_container_width=True):
         'Action': ['Initial', 'Sell & Buy', 'Buy', 'Rebalance'],
         'Sell': ['', 'MSFT', '', ''],
         'Buy': ['AAPL, NVDA, MSFT', 'INTC', 'GOOGL', 'AAPL, NVDA, GOOGL, TSLA'],
-        'Notes': ['Start', 'Swap MSFT→INTC', 'Add GOOGL', 'Equal weight 4 stocks']
+        'Weights': ['40, 40, 20', '33', '20', '25, 25, 25, 25'],
+        'Notes': ['Start: Heavy on AAPL/NVDA', 'Swap MSFT→INTC', 'Add GOOGL (20%)', 'Equal weight 4 stocks']
     })
     st.rerun()
 
@@ -137,7 +141,8 @@ if col4.button("📋 Example 2: Value Play", use_container_width=True):
         'Action': ['Initial', 'Buy', 'Sell & Buy'],
         'Sell': ['', '', 'BRK.B'],
         'Buy': ['BRK.B, JPM, JNJ', 'V', 'META'],
-        'Notes': ['Value stocks', 'Add Visa', 'Tech pivot']
+        'Weights': ['50, 25, 25', '20', '30'],
+        'Notes': ['Value stocks: 50% Berkshire', 'Add Visa 20%', 'Tech pivot: 30% Meta']
     })
     st.rerun()
 
@@ -163,7 +168,7 @@ if run_analysis:
             
             # Build portfolio composition timeline
             portfolio_timeline = []
-            current_holdings = set()
+            current_holdings = {}  # Changed to dict to store weights: {ticker: weight}
             
             for idx, row in transactions.iterrows():
                 trans_date = row['Date']
@@ -172,23 +177,58 @@ if run_analysis:
                 if pd.notna(row['Sell']) and row['Sell'].strip():
                     sell_tickers = [x.strip().upper() for x in row['Sell'].split(',') if x.strip()]
                     for ticker in sell_tickers:
-                        current_holdings.discard(ticker)
+                        current_holdings.pop(ticker, None)
                 
-                # Process buys
+                # Process buys with custom weights
                 if pd.notna(row['Buy']) and row['Buy'].strip():
                     buy_tickers = [x.strip().upper() for x in row['Buy'].split(',') if x.strip()]
-                    current_holdings.update(buy_tickers)
+                    
+                    # Parse weights if provided
+                    weights = []
+                    if pd.notna(row['Weights']) and row['Weights'].strip():
+                        try:
+                            weights = [float(x.strip()) for x in row['Weights'].split(',') if x.strip()]
+                            # Normalize weights to sum to 100
+                            total_weight = sum(weights)
+                            if total_weight > 0:
+                                weights = [w / total_weight * 100 for w in weights]
+                        except:
+                            weights = []
+                    
+                    # If no weights or wrong number, use equal weights
+                    if len(weights) != len(buy_tickers):
+                        weights = [100.0 / len(buy_tickers)] * len(buy_tickers)
+                    
+                    # Add to holdings
+                    for ticker, weight in zip(buy_tickers, weights):
+                        current_holdings[ticker] = weight
                 
-                # Handle rebalance (replace all holdings)
+                # Handle rebalance (replace all holdings with new weights)
                 if row['Action'] == 'Rebalance' and pd.notna(row['Buy']) and row['Buy'].strip():
                     buy_tickers = [x.strip().upper() for x in row['Buy'].split(',') if x.strip()]
-                    current_holdings = set(buy_tickers)
+                    
+                    # Parse weights
+                    weights = []
+                    if pd.notna(row['Weights']) and row['Weights'].strip():
+                        try:
+                            weights = [float(x.strip()) for x in row['Weights'].split(',') if x.strip()]
+                            total_weight = sum(weights)
+                            if total_weight > 0:
+                                weights = [w / total_weight * 100 for w in weights]
+                        except:
+                            weights = []
+                    
+                    if len(weights) != len(buy_tickers):
+                        weights = [100.0 / len(buy_tickers)] * len(buy_tickers)
+                    
+                    # Replace all holdings
+                    current_holdings = {ticker: weight for ticker, weight in zip(buy_tickers, weights)}
                 
                 # Record portfolio state
                 if current_holdings:
                     portfolio_timeline.append({
                         'start_date': trans_date,
-                        'tickers': list(current_holdings),
+                        'holdings': dict(current_holdings),  # Store as dict with weights
                         'action': row['Action'],
                         'notes': row['Notes']
                     })
@@ -225,12 +265,15 @@ if run_analysis:
             current_value = 1.0
             
             for period in portfolio_timeline:
-                tickers = period['tickers']
+                holdings_dict = period['holdings']
+                tickers = list(holdings_dict.keys())
+                weights_pct = list(holdings_dict.values())
+                
+                # Convert percentages to decimals
+                weights = [w / 100.0 for w in weights_pct]
+                
                 start = max(period['start_date'], global_start)
                 end = min(period['end_date'], global_end)
-                
-                # Equal weight for simplicity
-                weights = [1.0/len(tickers)] * len(tickers)
                 
                 # Get data
                 data = get_stock_data(tickers, start, end)
@@ -240,6 +283,7 @@ if run_analysis:
                 daily_returns = data.pct_change().dropna()
                 
                 if len(tickers) > 1:
+                    # Align weights with actual columns in data
                     aligned_weights = [weights[tickers.index(col)] for col in data.columns]
                     portfolio_daily = (daily_returns * aligned_weights).sum(axis=1)
                 else:
@@ -329,10 +373,13 @@ if run_analysis:
             with st.expander("📋 Portfolio Timeline"):
                 timeline_display = []
                 for p in portfolio_timeline:
+                    holdings_dict = p['holdings']
+                    holdings_str = ', '.join([f"{ticker} ({weight:.1f}%)" for ticker, weight in holdings_dict.items()])
+                    
                     timeline_display.append({
                         'Start Date': p['start_date'].date(),
                         'End Date': p['end_date'].date(),
-                        'Holdings': ', '.join(p['tickers']),
+                        'Holdings (Weight %)': holdings_str,
                         'Action': p['action'],
                         'Notes': p['notes']
                     })
