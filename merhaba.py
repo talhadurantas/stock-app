@@ -708,7 +708,9 @@ if run_analysis:
             for period in portfolio_timeline:
                 holdings_dict = period['holdings']
                 
-                if not holdings_dict:
+                # Skip periods with no holdings (100% cash)
+                if not holdings_dict or len(holdings_dict) == 0:
+                    st.info(f"ℹ️ Skipping period {period['start_date'].date()} - {period['end_date'].date()}: 100% cash (no stocks)")
                     continue
                 
                 tickers = list(holdings_dict.keys())
@@ -727,10 +729,15 @@ if run_analysis:
                         data = master_data[tickers[0]].loc[start:end].to_frame(tickers[0])
                     else:
                         data = master_data[tickers].loc[start:end]
-                except:
+                except KeyError as ke:
+                    st.warning(f"⚠️ Could not find data for {ke} in period {start.date()} to {end.date()}")
+                    continue
+                except Exception as ex:
+                    st.warning(f"⚠️ Data error in period {start.date()} to {end.date()}: {ex}")
                     continue
                 
                 if data.empty:
+                    st.warning(f"⚠️ No data available for period {start.date()} to {end.date()}")
                     continue
                 
                 # Calculate stock returns
@@ -763,12 +770,28 @@ if run_analysis:
             # STEP 6: Combine all periods
             # ================================================================
             
+            if not all_cumulative or all(df.empty for df in all_cumulative):
+                st.error("❌ No valid portfolio data could be calculated. Please check:")
+                st.write("- Are all ticker symbols valid?")
+                st.write("- Do the stocks have data for the selected date range?")
+                st.write("- Are the dates in chronological order?")
+                st.stop()
+            
             portfolio_cum = pd.concat(all_cumulative)
             portfolio_cum = portfolio_cum[~portfolio_cum.index.duplicated(keep='last')]
             portfolio_daily = pd.concat(all_daily_returns)
             
+            if portfolio_cum.empty or len(portfolio_cum) == 0:
+                st.error("❌ Portfolio calculation resulted in no data. Check your transactions and date range.")
+                st.stop()
+            
             # Align portfolio and benchmark
             common_idx = portfolio_cum.index.intersection(bench_cum.index)
+            
+            if len(common_idx) == 0:
+                st.error("❌ No overlapping dates between portfolio and benchmark. Check your date range.")
+                st.stop()
+            
             portfolio_cum = portfolio_cum.loc[common_idx]
             bench_cum = bench_cum.loc[common_idx]
             portfolio_daily = portfolio_daily.loc[common_idx]
@@ -778,7 +801,16 @@ if run_analysis:
             # STEP 7: Calculate all metrics
             # ================================================================
             
+            # Validate we have enough data
+            if len(portfolio_cum) < 2:
+                st.error("❌ Not enough data points to calculate returns. Need at least 2 days of data.")
+                st.stop()
+            
             years = (global_end - global_start).days / 365.25
+            
+            if years <= 0:
+                st.error("❌ Invalid date range. End date must be after start date.")
+                st.stop()
             
             # Returns
             total_return = portfolio_cum.iloc[-1] - 1
@@ -1429,8 +1461,28 @@ TRANSACTION HISTORY
         
     except Exception as e:
         st.error(f"❌ **Analysis Error:** {str(e)}")
-        st.exception(e)
-        st.info("💡 **Troubleshooting Tips:**\n- Check that all ticker symbols are valid\n- Ensure dates are in correct format\n- Verify that transactions are chronological\n- Make sure weights sum to reasonable values")
+        
+        # Show detailed debugging info
+        with st.expander("🔍 Debug Information", expanded=True):
+            st.write("**Error Details:**")
+            st.exception(e)
+            
+            st.write("**Troubleshooting Checklist:**")
+            st.write("1. ✅ Check all ticker symbols are valid")
+            st.write("2. ✅ Ensure dates are in correct format (YYYY-MM-DD)")
+            st.write("3. ✅ Verify transactions are in chronological order")
+            st.write("4. ✅ Make sure at least one stock has data in the date range")
+            st.write("5. ✅ Check that invested percentages don't exceed 100%")
+            st.write("6. ✅ Verify weights match the number of Buy tickers")
+            
+            st.write("**Quick Fixes:**")
+            st.write("- Try one of the example portfolios (Tech Growth or Value Play)")
+            st.write("- Check if your stocks were trading during the selected period")
+            st.write("- Use the Preview section above to see portfolio composition")
+            
+            # Show current transaction data for debugging
+            st.write("**Current Transactions:**")
+            st.dataframe(edited_df)
 
 # ============================================================================
 # FOOTER
