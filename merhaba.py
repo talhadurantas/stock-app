@@ -270,6 +270,11 @@ if 'transactions' not in st.session_state:
         'Notes': ['Starting portfolio', 'Replaced MSFT with INTC', 'Added GOOGL at 25%']
     })
 
+# Callback function to update transactions
+def update_transactions():
+    """Update session state when data editor changes"""
+    pass  # Data is updated directly in session state
+
 # Information box about input rules
 with st.expander("💡 Input Rules & Guidelines", expanded=False):
     st.markdown("""
@@ -312,6 +317,7 @@ st.markdown("---")
 # Transaction table editor
 st.markdown("#### 📝 Transaction Log")
 
+# Edit transactions (OUTSIDE OF FORM for immediate updates)
 edited_df = st.data_editor(
     st.session_state.transactions,
     num_rows="dynamic",
@@ -351,11 +357,76 @@ edited_df = st.data_editor(
             width="large"
         )
     },
-    hide_index=False
+    hide_index=False,
+    key="transaction_editor"  # Add unique key
 )
 
-# Update session state
+# Update session state immediately when data changes
 st.session_state.transactions = edited_df
+
+# Debug/Preview section (helps users see current state)
+with st.expander("🔍 Preview Current Portfolio Composition", expanded=False):
+    st.caption("This shows what your portfolio looks like at each transaction based on current inputs")
+    
+    try:
+        preview_timeline = []
+        preview_holdings = {}
+        
+        for idx, row in edited_df.iterrows():
+            action = row['Action']
+            
+            # Simulate the logic
+            if action == "Rebalance":
+                preview_holdings = {}
+            
+            if action != "Rebalance" and pd.notna(row['Sell']) and str(row['Sell']).strip():
+                sell_tickers = [t.strip().upper() for t in str(row['Sell']).split(',') if t.strip()]
+                for ticker in sell_tickers:
+                    preview_holdings.pop(ticker, None)
+            
+            if pd.notna(row['Buy']) and str(row['Buy']).strip():
+                buy_tickers = [t.strip().upper() for t in str(row['Buy']).split(',') if t.strip()]
+                weights = []
+                
+                if pd.notna(row['Weights']) and str(row['Weights']).strip():
+                    try:
+                        weights = [float(w.strip()) for w in str(row['Weights']).split(',') if w.strip()]
+                        total = sum(weights)
+                        if total > 0:
+                            weights = [w / total * 100 for w in weights]
+                    except:
+                        weights = []
+                
+                if len(weights) != len(buy_tickers):
+                    weights = [100.0 / len(buy_tickers)] * len(buy_tickers)
+                
+                if action == "Buy":
+                    current_invested = sum(preview_holdings.values()) if preview_holdings else 0
+                    available = 100 - current_invested
+                    scaled_weights = [w * (available / 100) for w in weights]
+                    for ticker, weight in zip(buy_tickers, scaled_weights):
+                        preview_holdings[ticker] = weight
+                else:
+                    for ticker, weight in zip(buy_tickers, weights):
+                        preview_holdings[ticker] = weight
+            
+            total_inv = sum(preview_holdings.values()) if preview_holdings else 0
+            preview_timeline.append({
+                'Row': idx,
+                'Date': row['Date'],
+                'Action': action,
+                'Holdings': ', '.join([f"{t}({w:.1f}%)" for t, w in preview_holdings.items()]) if preview_holdings else 'Cash Only',
+                'Total Invested': f"{total_inv:.1f}%",
+                'Cash': f"{100-total_inv:.1f}%"
+            })
+        
+        if preview_timeline:
+            st.dataframe(pd.DataFrame(preview_timeline), use_container_width=True)
+        else:
+            st.info("Add transactions to see preview")
+            
+    except Exception as e:
+        st.error(f"Preview error: {e}")
 
 # ============================================================================
 # VALIDATION SYSTEM
@@ -410,16 +481,23 @@ with col1:
             'Weights': [''],
             'Notes': ['']
         })
+        # Use pd.concat with proper index reset
         st.session_state.transactions = pd.concat(
             [st.session_state.transactions, new_row], 
             ignore_index=True
-        )
+        ).reset_index(drop=True)
         st.rerun()
 
 with col2:
     if st.button("🗑️ Clear All", use_container_width=True):
+        # Properly clear with column structure
         st.session_state.transactions = pd.DataFrame({
-            'Date': [], 'Action': [], 'Sell': [], 'Buy': [], 'Weights': [], 'Notes': []
+            'Date': [], 
+            'Action': [], 
+            'Sell': [], 
+            'Buy': [], 
+            'Weights': [], 
+            'Notes': []
         })
         st.rerun()
 
@@ -430,9 +508,9 @@ with col3:
             'Action': ['Initial', 'Sell & Buy', 'Buy', 'Rebalance'],
             'Sell': ['', 'MSFT', '', ''],
             'Buy': ['AAPL, NVDA, MSFT', 'INTC', 'GOOGL', 'AAPL, NVDA, GOOGL, TSLA'],
-            'Weights': ['40, 40, 20', '33', '20', '25, 25, 25, 25'],
-            'Notes': ['Start: Heavy AAPL/NVDA', 'Swap MSFT→INTC', 'Add GOOGL', 'Equal 4 stocks']
-        })
+            'Weights': ['40, 40, 20', '40', '100', '25, 25, 25, 25'],
+            'Notes': ['Start: Heavy AAPL/NVDA', 'Swap MSFT→INTC', 'Add GOOGL (use all cash)', 'Equal 4 stocks']
+        }).reset_index(drop=True)
         st.rerun()
 
 with col4:
@@ -442,9 +520,9 @@ with col4:
             'Action': ['Initial', 'Buy', 'Sell & Buy'],
             'Sell': ['', '', 'BRK.B'],
             'Buy': ['BRK.B, JPM, JNJ', 'V', 'META'],
-            'Weights': ['50, 25, 25', '20', '30'],
-            'Notes': ['Value: 50% Berkshire', 'Add Visa', 'Tech pivot: Meta']
-        })
+            'Weights': ['50, 25, 25', '100', '30'],
+            'Notes': ['Value: 50% Berkshire', 'Add Visa (all cash)', 'Tech pivot: 30% Meta']
+        }).reset_index(drop=True)
         st.rerun()
 
 st.markdown("---")
