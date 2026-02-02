@@ -274,23 +274,38 @@ if 'transactions' not in st.session_state:
 with st.expander("💡 Input Rules & Guidelines", expanded=False):
     st.markdown("""
     **Action Types:**
-    - **Initial**: Start your portfolio with initial holdings
-    - **Buy**: Add new stocks to your existing portfolio
+    - **Initial**: Start your portfolio with initial holdings (weights = % of total portfolio)
+    - **Buy**: Add new stocks to your existing portfolio (weights = % of NEW MONEY to invest)
     - **Sell**: Remove stocks from your portfolio (creates cash position)
-    - **Sell & Buy**: Swap one or more stocks for others (requires both Sell and Buy)
-    - **Rebalance**: Replace entire portfolio with new composition
+    - **Sell & Buy**: Swap one or more stocks for others (weights = % of SOLD MONEY to reinvest)
+    - **Rebalance**: Replace entire portfolio with new composition (weights = % of total portfolio)
+    
+    **How Weights Work:**
+    - **Initial / Rebalance**: Weights are % of TOTAL portfolio (should sum to ≤100%)
+      - Example: `50, 30, 20` = 50% stock A, 30% stock B, 20% stock C (100% invested)
+      - Example: `40, 30, 20` = 90% invested, 10% cash
+    
+    - **Buy**: Weights are % of your AVAILABLE CASH to invest
+      - Example: Have 50% cash → Buy with weights `60, 40` → Invest 30% in stock A (60% of 50%), 20% in stock B (40% of 50%)
+      - Leave weights empty to invest ALL available cash equally
+    
+    - **Sell & Buy**: Weights are % of the PROCEEDS from selling
+      - Example: Sell MSFT (40% of portfolio) with weights `50, 50` → 20% into each new stock
     
     **Field Requirements:**
     - **Date**: Use YYYY-MM-DD format (e.g., 2013-01-01) or 8 digits (20130101)
     - **Sell**: Required for 'Sell' and 'Sell & Buy' actions
     - **Buy**: Required for all actions except 'Sell'
-    - **Weights**: Optional. Comma-separated percentages for Buy tickers. Leave empty for equal weight.
+    - **Weights**: Optional. Leave empty for equal allocation.
     
-    **Weight Examples:**
-    - `40, 40, 20` = 40% first stock, 40% second, 20% third
-    - Leave empty = Equal weight (e.g., 3 stocks = 33.33% each)
-    - System auto-normalizes (e.g., `2, 2, 1` becomes 40%, 40%, 20%)
+    **Common Patterns:**
+    1. **Start with 3 stocks**: Initial | Buy: AAPL, NVDA, MSFT | Weights: 33, 33, 34
+    2. **Add a 4th stock with remaining cash**: Buy | Buy: GOOGL | Weights: (leave empty to use all cash)
+    3. **Sell one, buy another**: Sell & Buy | Sell: MSFT | Buy: INTC | Weights: (leave empty)
+    4. **Go to 100% cash**: Sell | Sell: AAPL, NVDA, MSFT
+    5. **Rebalance everything**: Rebalance | Buy: AAPL, NVDA, GOOGL, TSLA | Weights: 25, 25, 25, 25
     """)
+
 
 st.markdown("---")
 
@@ -477,7 +492,7 @@ if run_analysis:
                 if action == "Rebalance":
                     current_holdings = {}
                 
-                # Process SELLS
+                # Process SELLS - remove stocks from holdings
                 if action != "Rebalance" and pd.notna(row['Sell']) and str(row['Sell']).strip():
                     sell_tickers = [t.strip().upper() for t in str(row['Sell']).split(',') if t.strip()]
                     for ticker in sell_tickers:
@@ -503,9 +518,26 @@ if run_analysis:
                     if len(weights) != len(buy_tickers):
                         weights = [100.0 / len(buy_tickers)] * len(buy_tickers)
                     
-                    # Add to holdings
-                    for ticker, weight in zip(buy_tickers, weights):
-                        current_holdings[ticker] = weight
+                    # CRITICAL FIX: For Buy action, we need to scale weights to remaining portfolio space
+                    if action == "Buy":
+                        # Calculate current total invested
+                        current_invested = sum(current_holdings.values()) if current_holdings else 0
+                        
+                        # Available space for new buys
+                        available_space = 100 - current_invested
+                        
+                        # Scale the new buy weights to fit in available space
+                        # User enters weights as if buying with ALL available cash
+                        scaled_weights = [w * (available_space / 100) for w in weights]
+                        
+                        # Add to holdings with scaled weights
+                        for ticker, weight in zip(buy_tickers, scaled_weights):
+                            current_holdings[ticker] = weight
+                    
+                    else:
+                        # For Initial, Rebalance, Sell & Buy - use weights as-is
+                        for ticker, weight in zip(buy_tickers, weights):
+                            current_holdings[ticker] = weight
                 
                 # Calculate total invested percentage
                 total_invested = sum(current_holdings.values()) if current_holdings else 0
