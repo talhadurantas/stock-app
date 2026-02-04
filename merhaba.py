@@ -383,6 +383,13 @@ with st.expander("🔍 Preview Current Portfolio Composition", expanded=False):
         for idx, row in edited_df.iterrows():
             action = row['Action']
             
+            # Calculate sold proceeds BEFORE processing sells (for Sell & Buy)
+            sold_proceeds_pct = 0
+            if action == "Sell & Buy" and pd.notna(row['Sell']) and str(row['Sell']).strip():
+                sell_tickers = [t.strip().upper() for t in str(row['Sell']).split(',') if t.strip()]
+                for ticker in sell_tickers:
+                    sold_proceeds_pct += preview_holdings.get(ticker, 0)
+            
             # Simulate the logic
             if action == "Rebalance":
                 preview_holdings = {}
@@ -406,7 +413,7 @@ with st.expander("🔍 Preview Current Portfolio Composition", expanded=False):
                     weights = [100.0 / len(buy_tickers)] * len(buy_tickers)
                 
                 if action == "Buy":
-                    # FIXED PREVIEW LOGIC
+                    # Buy: invest % of available cash
                     current_invested = sum(preview_holdings.values()) if preview_holdings else 0
                     available_cash = 100 - current_invested
                     weight_sum = sum(weights)
@@ -415,8 +422,18 @@ with st.expander("🔍 Preview Current Portfolio Composition", expanded=False):
                     for ticker, weight in zip(buy_tickers, weights):
                         portfolio_percentage = (weight / weight_sum) * actual_investment
                         preview_holdings[ticker] = preview_holdings.get(ticker, 0) + portfolio_percentage
+                
+                elif action == "Sell & Buy":
+                    # Sell & Buy: reinvest % of sold proceeds
+                    weight_sum = sum(weights)
+                    reinvestment_amount = (weight_sum / 100) * sold_proceeds_pct
+                    
+                    for ticker, weight in zip(buy_tickers, weights):
+                        portfolio_percentage = (weight / weight_sum) * reinvestment_amount
+                        preview_holdings[ticker] = preview_holdings.get(ticker, 0) + portfolio_percentage
+                
                 else:
-                    # For Initial, Rebalance, Sell & Buy
+                    # Initial, Rebalance: weights are % of total portfolio
                     weight_sum = sum(weights)
                     for ticker, weight in zip(buy_tickers, weights):
                         normalized_weight = (weight / weight_sum) * 100 if weight_sum > 0 else 0
@@ -582,6 +599,14 @@ if run_analysis:
                 if action == "Rebalance":
                     current_holdings = {}
                 
+                # Calculate sold proceeds BEFORE processing sells (for Sell & Buy action)
+                sold_proceeds_pct = 0
+                if action == "Sell & Buy" and pd.notna(row['Sell']) and str(row['Sell']).strip():
+                    sell_tickers = [t.strip().upper() for t in str(row['Sell']).split(',') if t.strip()]
+                    # Calculate total % being sold
+                    for ticker in sell_tickers:
+                        sold_proceeds_pct += current_holdings.get(ticker, 0)
+                
                 # Process SELLS - remove stocks from holdings
                 if action != "Rebalance" and pd.notna(row['Sell']) and str(row['Sell']).strip():
                     sell_tickers = [t.strip().upper() for t in str(row['Sell']).split(',') if t.strip()]
@@ -606,7 +631,7 @@ if run_analysis:
                         weights = [100.0 / len(buy_tickers)] * len(buy_tickers)
                     
                     # ============================================================
-                    # CRITICAL FIX: Corrected Buy action logic
+                    # CRITICAL FIX: Corrected action logic for all types
                     # ============================================================
                     if action == "Buy":
                         # Calculate current total invested
@@ -630,12 +655,24 @@ if run_analysis:
                             # Add to existing holdings (or create new)
                             current_holdings[ticker] = current_holdings.get(ticker, 0) + portfolio_percentage
                     
+                    elif action == "Sell & Buy":
+                        # For Sell & Buy: weights represent % of SOLD PROCEEDS to reinvest
+                        weight_sum = sum(weights)
+                        # Amount to reinvest = (weight_sum / 100) * sold_proceeds_pct
+                        reinvestment_amount = (weight_sum / 100) * sold_proceeds_pct
+                        
+                        # Distribute reinvestment proportionally
+                        for ticker, weight in zip(buy_tickers, weights):
+                            portfolio_percentage = (weight / weight_sum) * reinvestment_amount
+                            # Add to existing holdings (or create new)
+                            current_holdings[ticker] = current_holdings.get(ticker, 0) + portfolio_percentage
+                    
                     else:
-                        # For Initial, Rebalance, Sell & Buy - weights are direct percentages
-                        # Normalize weights to sum to 100 (or less if user wants cash)
+                        # For Initial, Rebalance - weights are direct percentages of total portfolio
+                        # These actions replace the entire portfolio
                         weight_sum = sum(weights)
                         for ticker, weight in zip(buy_tickers, weights):
-                            # Use weights as-is, they represent % of portfolio (or proceeds for Sell&Buy)
+                            # Normalize to ensure they represent actual portfolio %
                             normalized_weight = (weight / weight_sum) * 100 if weight_sum > 0 else 0
                             current_holdings[ticker] = normalized_weight
                 
