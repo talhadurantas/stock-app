@@ -262,12 +262,11 @@ st.caption("Define your portfolio evolution through transactions. The system aut
 # Initialize session state
 if 'transactions' not in st.session_state:
     st.session_state.transactions = pd.DataFrame({
-        'Date': ['2013-01-01', '2017-02-05', '2020-03-15'],
-        'Action': ['Initial', 'Sell & Buy', 'Buy'],
-        'Sell': ['', 'MSFT', ''],
-        'Buy': ['AAPL, NVDA, MSFT', 'INTC', 'GOOGL'],
-        'Weights': ['33, 33, 34', '100', '50'],
-        'Notes': ['Starting portfolio', 'Replaced MSFT with INTC', 'Added GOOGL using 50% of cash']
+        'Date': ['2013-01-01'],
+        'Action': ['Initial'],
+        'Sell': [''],
+        'Buy': [''],
+        'Weights': ['']
     })
 
 # Callback function to update transactions
@@ -357,16 +356,11 @@ edited_df = st.data_editor(
         "Weights": st.column_config.TextColumn(
             "Weights %",
             help="For Buy: % of cash to invest (sum ≤100). For Initial/Rebalance: % of portfolio (sum ≤100)",
-            width="small"
-        ),
-        "Notes": st.column_config.TextColumn(
-            "Notes",
-            help="Optional description",
-            width="large"
+            width="medium"
         )
     },
     hide_index=False,
-    key="transaction_editor"  # Add unique key
+    key="transaction_editor"
 )
 
 # Update session state immediately when data changes
@@ -507,8 +501,7 @@ with col1:
             'Action': ['Buy'],
             'Sell': [''],
             'Buy': [''],
-            'Weights': [''],
-            'Notes': ['']
+            'Weights': ['']
         })
         # Use pd.concat with proper index reset
         st.session_state.transactions = pd.concat(
@@ -525,8 +518,7 @@ with col2:
             'Action': [], 
             'Sell': [], 
             'Buy': [], 
-            'Weights': [], 
-            'Notes': []
+            'Weights': []
         })
         st.rerun()
 
@@ -537,8 +529,7 @@ with col3:
             'Action': ['Initial', 'Sell & Buy', 'Buy', 'Rebalance'],
             'Sell': ['', 'MSFT', '', ''],
             'Buy': ['AAPL, NVDA, MSFT', 'INTC', 'GOOGL', 'AAPL, NVDA, GOOGL, TSLA'],
-            'Weights': ['40, 40, 20', '100', '50', '25, 25, 25, 25'],
-            'Notes': ['Start: Heavy AAPL/NVDA', 'Swap MSFT→INTC', 'Add GOOGL (50% of cash)', 'Equal 4 stocks']
+            'Weights': ['40, 40, 20', '100', '50', '25, 25, 25, 25']
         }).reset_index(drop=True)
         st.rerun()
 
@@ -549,8 +540,7 @@ with col4:
             'Action': ['Initial', 'Buy', 'Sell & Buy'],
             'Sell': ['', '', 'BRK.B'],
             'Buy': ['BRK.B, JPM, JNJ', 'V', 'META'],
-            'Weights': ['50, 25, 25', '100', '80'],
-            'Notes': ['Value: 50% Berkshire', 'Add Visa (all cash)', 'Pivot: 80% to Meta, keep 20% cash']
+            'Weights': ['50, 25, 25', '100', '80']
         }).reset_index(drop=True)
         st.rerun()
 
@@ -686,8 +676,7 @@ if run_analysis:
                     'holdings': dict(current_holdings),
                     'invested_pct': total_invested,
                     'cash_pct': cash_percentage,
-                    'action': action,
-                    'notes': str(row['Notes']) if pd.notna(row['Notes']) else ''
+                    'action': action
                 })
             
             if not portfolio_timeline:
@@ -1102,8 +1091,7 @@ if run_analysis:
                     'Holdings (Weight %)': holdings_str,
                     'Invested %': f"{p['invested_pct']:.1f}%",
                     'Cash %': f"{p['cash_pct']:.1f}%",
-                    'Action': p['action'],
-                    'Notes': p['notes']
+                    'Action': p['action']
                 })
             
             df_timeline = pd.DataFrame(timeline_display)
