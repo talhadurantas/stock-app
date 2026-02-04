@@ -269,11 +269,6 @@ if 'transactions' not in st.session_state:
         'Weights': ['']
     })
 
-# Callback function to update transactions
-def update_transactions():
-    """Update session state when data editor changes"""
-    pass  # Data is updated directly in session state
-
 # Information box about input rules
 with st.expander("💡 Input Rules & Guidelines", expanded=False):
     st.markdown("""
@@ -305,17 +300,6 @@ with st.expander("💡 Input Rules & Guidelines", expanded=False):
     - **Sell**: Required for 'Sell' and 'Sell & Buy' actions
     - **Buy**: Required for all actions except 'Sell'
     - **Weights**: Optional. Leave empty for equal allocation of ALL available funds.
-    
-    **Common Patterns:**
-    1. **Start with 3 stocks, 100% invested**: Initial | Buy: AAPL, NVDA, MSFT | Weights: 33, 33, 34
-    2. **Start with 3 stocks, keep some cash**: Initial | Buy: AAPL, NVDA, MSFT | Weights: 30, 30, 30 (90% invested, 10% cash)
-    3. **Invest ALL remaining cash in one stock**: Buy | Buy: GOOGL | Weights: 100
-    4. **Invest HALF of cash in one stock**: Buy | Buy: GOOGL | Weights: 50
-    5. **Invest ALL cash split 60/40**: Buy | Buy: GOOGL, TSLA | Weights: 60, 40
-    6. **Invest HALF of cash split 60/40**: Buy | Buy: GOOGL, TSLA | Weights: 30, 20 (sums to 50)
-    7. **Sell one, buy another with ALL proceeds**: Sell & Buy | Sell: MSFT | Buy: INTC | Weights: 100
-    8. **Go to 100% cash**: Sell | Sell: AAPL, NVDA, MSFT
-    9. **Rebalance everything**: Rebalance | Buy: AAPL, NVDA, GOOGL, TSLA | Weights: 25, 25, 25, 25
     """)
 
 
@@ -363,8 +347,15 @@ edited_df = st.data_editor(
     key="transaction_editor"
 )
 
-# Update session state immediately when data changes
-st.session_state.transactions = edited_df
+# ============================================================================
+# CRITICAL FIX: Robust State Synchronization
+# ============================================================================
+# Check if the edited dataframe is different from the session state
+# If it is, update the state and FORCE A RERUN to lock in changes immediately.
+# This fixes the "input disappearing on first try" bug.
+if not edited_df.equals(st.session_state.transactions):
+    st.session_state.transactions = edited_df
+    st.rerun()
 
 # Debug/Preview section (helps users see current state)
 with st.expander("🔍 Preview Current Portfolio Composition", expanded=False):
@@ -1535,10 +1526,10 @@ TRANSACTION HISTORY
 st.markdown("---")
 st.markdown("""
 <div style='text-align: center; color: #666; font-size: 0.9em; padding: 20px;'>
-    <strong>Professional Portfolio Visualizer v3.1 - FIXED</strong><br>
+    <strong>Professional Portfolio Visualizer v3.2 - FIXED</strong><br>
     Built with ❤️ using Streamlit & yfinance<br>
+    <strong>FIXED in v3.2:</strong> Input persistence bug resolved (data editor sync)<br>
     <strong>FIXED in v3.1:</strong> Buy action now correctly handles partial cash investment<br>
-    <strong>v3.0 features:</strong> Cash Interest Tracking • Monthly Heatmaps • Risk Analysis (VaR/CVaR) • CSV/TXT Export • Benchmark Rolling Charts<br>
     Multi-period analysis with cash tracking & comprehensive risk metrics<br>
     <em>For educational purposes only. Not financial advice.</em>
 </div>
