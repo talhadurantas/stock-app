@@ -428,10 +428,9 @@ with st.expander("🔍 Preview Current Portfolio Composition", expanded=False):
                 
                 else:
                     # Initial, Rebalance: weights are % of total portfolio
-                    weight_sum = sum(weights)
+                    # FIXED: Removed normalization to allow for cash positions
                     for ticker, weight in zip(buy_tickers, weights):
-                        normalized_weight = (weight / weight_sum) * 100 if weight_sum > 0 else 0
-                        preview_holdings[ticker] = normalized_weight
+                         preview_holdings[ticker] = weight
             
             total_inv = sum(preview_holdings.values()) if preview_holdings else 0
             preview_timeline.append({
@@ -660,11 +659,9 @@ if run_analysis:
                     else:
                         # For Initial, Rebalance - weights are direct percentages of total portfolio
                         # These actions replace the entire portfolio
-                        weight_sum = sum(weights)
+                        # FIXED: Removed normalization to allow for cash positions
                         for ticker, weight in zip(buy_tickers, weights):
-                            # Normalize to ensure they represent actual portfolio %
-                            normalized_weight = (weight / weight_sum) * 100 if weight_sum > 0 else 0
-                            current_holdings[ticker] = normalized_weight
+                            current_holdings[ticker] = weight
                 
                 # Calculate total invested percentage
                 total_invested = sum(current_holdings.values()) if current_holdings else 0
