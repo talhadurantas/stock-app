@@ -266,8 +266,8 @@ if 'transactions' not in st.session_state:
         'Action': ['Initial', 'Sell & Buy', 'Buy'],
         'Sell': ['', 'MSFT', ''],
         'Buy': ['AAPL, NVDA, MSFT', 'INTC', 'GOOGL'],
-        'Weights': ['33, 33, 34', '33', '25'],
-        'Notes': ['Starting portfolio', 'Replaced MSFT with INTC', 'Added GOOGL at 25%']
+        'Weights': ['33, 33, 34', '100', '50'],
+        'Notes': ['Starting portfolio', 'Replaced MSFT with INTC', 'Added GOOGL using 50% of cash']
     })
 
 # Callback function to update transactions
@@ -280,7 +280,7 @@ with st.expander("💡 Input Rules & Guidelines", expanded=False):
     st.markdown("""
     **Action Types:**
     - **Initial**: Start your portfolio with initial holdings (weights = % of total portfolio)
-    - **Buy**: Add new stocks to your existing portfolio (weights = % of NEW MONEY to invest)
+    - **Buy**: Add new stocks to your existing portfolio (weights = % of AVAILABLE CASH to invest)
     - **Sell**: Remove stocks from your portfolio (creates cash position)
     - **Sell & Buy**: Swap one or more stocks for others (weights = % of SOLD MONEY to reinvest)
     - **Rebalance**: Replace entire portfolio with new composition (weights = % of total portfolio)
@@ -290,25 +290,33 @@ with st.expander("💡 Input Rules & Guidelines", expanded=False):
       - Example: `50, 30, 20` = 50% stock A, 30% stock B, 20% stock C (100% invested)
       - Example: `40, 30, 20` = 90% invested, 10% cash
     
-    - **Buy**: Weights are % of your AVAILABLE CASH to invest
-      - Example: Have 50% cash → Buy with weights `60, 40` → Invest 30% in stock A (60% of 50%), 20% in stock B (40% of 50%)
+    - **Buy**: Weights represent what % of your AVAILABLE CASH to invest
+      - **Key:** Weights should sum to 100 to invest ALL cash, or less to invest partially
+      - Example: Have 50% cash → Buy with weights `60, 40` (sum=100) → Invests ALL 50% cash: 30% in stock A, 20% in stock B
+      - Example: Have 50% cash → Buy with weights `30, 20` (sum=50) → Invests HALF (25%) of cash: 15% in stock A, 10% in stock B
+      - Example: Have 50% cash → Buy with weights `100` → Invests ALL 50% cash into one stock
       - Leave weights empty to invest ALL available cash equally
     
-    - **Sell & Buy**: Weights are % of the PROCEEDS from selling
+    - **Sell & Buy**: Weights are % of the PROCEEDS from selling (sum to 100 to reinvest all proceeds)
       - Example: Sell MSFT (40% of portfolio) with weights `50, 50` → 20% into each new stock
+      - Example: Sell MSFT with weights `60, 20` (sum=80) → Reinvest only 80% of proceeds, keep 20% as cash
     
     **Field Requirements:**
     - **Date**: Use YYYY-MM-DD format (e.g., 2013-01-01) or 8 digits (20130101)
     - **Sell**: Required for 'Sell' and 'Sell & Buy' actions
     - **Buy**: Required for all actions except 'Sell'
-    - **Weights**: Optional. Leave empty for equal allocation.
+    - **Weights**: Optional. Leave empty for equal allocation of ALL available funds.
     
     **Common Patterns:**
-    1. **Start with 3 stocks**: Initial | Buy: AAPL, NVDA, MSFT | Weights: 33, 33, 34
-    2. **Add a 4th stock with remaining cash**: Buy | Buy: GOOGL | Weights: (leave empty to use all cash)
-    3. **Sell one, buy another**: Sell & Buy | Sell: MSFT | Buy: INTC | Weights: (leave empty)
-    4. **Go to 100% cash**: Sell | Sell: AAPL, NVDA, MSFT
-    5. **Rebalance everything**: Rebalance | Buy: AAPL, NVDA, GOOGL, TSLA | Weights: 25, 25, 25, 25
+    1. **Start with 3 stocks, 100% invested**: Initial | Buy: AAPL, NVDA, MSFT | Weights: 33, 33, 34
+    2. **Start with 3 stocks, keep some cash**: Initial | Buy: AAPL, NVDA, MSFT | Weights: 30, 30, 30 (90% invested, 10% cash)
+    3. **Invest ALL remaining cash in one stock**: Buy | Buy: GOOGL | Weights: 100
+    4. **Invest HALF of cash in one stock**: Buy | Buy: GOOGL | Weights: 50
+    5. **Invest ALL cash split 60/40**: Buy | Buy: GOOGL, TSLA | Weights: 60, 40
+    6. **Invest HALF of cash split 60/40**: Buy | Buy: GOOGL, TSLA | Weights: 30, 20 (sums to 50)
+    7. **Sell one, buy another with ALL proceeds**: Sell & Buy | Sell: MSFT | Buy: INTC | Weights: 100
+    8. **Go to 100% cash**: Sell | Sell: AAPL, NVDA, MSFT
+    9. **Rebalance everything**: Rebalance | Buy: AAPL, NVDA, GOOGL, TSLA | Weights: 25, 25, 25, 25
     """)
 
 
@@ -348,7 +356,7 @@ edited_df = st.data_editor(
         ),
         "Weights": st.column_config.TextColumn(
             "Weights %",
-            help="Optional: Percentages for Buy tickers (comma-separated)",
+            help="For Buy: % of cash to invest (sum ≤100). For Initial/Rebalance: % of portfolio (sum ≤100)",
             width="small"
         ),
         "Notes": st.column_config.TextColumn(
@@ -391,9 +399,6 @@ with st.expander("🔍 Preview Current Portfolio Composition", expanded=False):
                 if pd.notna(row['Weights']) and str(row['Weights']).strip():
                     try:
                         weights = [float(w.strip()) for w in str(row['Weights']).split(',') if w.strip()]
-                        total = sum(weights)
-                        if total > 0:
-                            weights = [w / total * 100 for w in weights]
                     except:
                         weights = []
                 
@@ -401,14 +406,21 @@ with st.expander("🔍 Preview Current Portfolio Composition", expanded=False):
                     weights = [100.0 / len(buy_tickers)] * len(buy_tickers)
                 
                 if action == "Buy":
+                    # FIXED PREVIEW LOGIC
                     current_invested = sum(preview_holdings.values()) if preview_holdings else 0
-                    available = 100 - current_invested
-                    scaled_weights = [w * (available / 100) for w in weights]
-                    for ticker, weight in zip(buy_tickers, scaled_weights):
-                        preview_holdings[ticker] = weight
-                else:
+                    available_cash = 100 - current_invested
+                    weight_sum = sum(weights)
+                    actual_investment = (weight_sum / 100) * available_cash
+                    
                     for ticker, weight in zip(buy_tickers, weights):
-                        preview_holdings[ticker] = weight
+                        portfolio_percentage = (weight / weight_sum) * actual_investment
+                        preview_holdings[ticker] = preview_holdings.get(ticker, 0) + portfolio_percentage
+                else:
+                    # For Initial, Rebalance, Sell & Buy
+                    weight_sum = sum(weights)
+                    for ticker, weight in zip(buy_tickers, weights):
+                        normalized_weight = (weight / weight_sum) * 100 if weight_sum > 0 else 0
+                        preview_holdings[ticker] = normalized_weight
             
             total_inv = sum(preview_holdings.values()) if preview_holdings else 0
             preview_timeline.append({
@@ -508,8 +520,8 @@ with col3:
             'Action': ['Initial', 'Sell & Buy', 'Buy', 'Rebalance'],
             'Sell': ['', 'MSFT', '', ''],
             'Buy': ['AAPL, NVDA, MSFT', 'INTC', 'GOOGL', 'AAPL, NVDA, GOOGL, TSLA'],
-            'Weights': ['40, 40, 20', '40', '100', '25, 25, 25, 25'],
-            'Notes': ['Start: Heavy AAPL/NVDA', 'Swap MSFT→INTC', 'Add GOOGL (use all cash)', 'Equal 4 stocks']
+            'Weights': ['40, 40, 20', '100', '50', '25, 25, 25, 25'],
+            'Notes': ['Start: Heavy AAPL/NVDA', 'Swap MSFT→INTC', 'Add GOOGL (50% of cash)', 'Equal 4 stocks']
         }).reset_index(drop=True)
         st.rerun()
 
@@ -520,8 +532,8 @@ with col4:
             'Action': ['Initial', 'Buy', 'Sell & Buy'],
             'Sell': ['', '', 'BRK.B'],
             'Buy': ['BRK.B, JPM, JNJ', 'V', 'META'],
-            'Weights': ['50, 25, 25', '100', '30'],
-            'Notes': ['Value: 50% Berkshire', 'Add Visa (all cash)', 'Tech pivot: 30% Meta']
+            'Weights': ['50, 25, 25', '100', '80'],
+            'Notes': ['Value: 50% Berkshire', 'Add Visa (all cash)', 'Pivot: 80% to Meta, keep 20% cash']
         }).reset_index(drop=True)
         st.rerun()
 
@@ -585,37 +597,47 @@ if run_analysis:
                     if pd.notna(row['Weights']) and str(row['Weights']).strip():
                         try:
                             weights = [float(w.strip()) for w in str(row['Weights']).split(',') if w.strip()]
-                            # Normalize to sum to 100
-                            total_weight = sum(weights)
-                            if total_weight > 0:
-                                weights = [w / total_weight * 100 for w in weights]
                         except:
                             weights = []
                     
                     # Use equal weights if not provided or incorrect number
                     if len(weights) != len(buy_tickers):
+                        # Default: invest ALL available funds equally
                         weights = [100.0 / len(buy_tickers)] * len(buy_tickers)
                     
-                    # CRITICAL FIX: For Buy action, we need to scale weights to remaining portfolio space
+                    # ============================================================
+                    # CRITICAL FIX: Corrected Buy action logic
+                    # ============================================================
                     if action == "Buy":
                         # Calculate current total invested
                         current_invested = sum(current_holdings.values()) if current_holdings else 0
                         
-                        # Available space for new buys
-                        available_space = 100 - current_invested
+                        # Available cash percentage
+                        available_cash = 100 - current_invested
                         
-                        # Scale the new buy weights to fit in available space
-                        # User enters weights as if buying with ALL available cash
-                        scaled_weights = [w * (available_space / 100) for w in weights]
+                        # Sum of weights determines what % of cash to invest
+                        # If weights = [60, 40] (sum=100), invest ALL cash
+                        # If weights = [30, 20] (sum=50), invest HALF of cash
+                        weight_sum = sum(weights)
                         
-                        # Add to holdings with scaled weights
-                        for ticker, weight in zip(buy_tickers, scaled_weights):
-                            current_holdings[ticker] = weight
+                        # Calculate total amount being invested
+                        actual_investment = (weight_sum / 100) * available_cash
+                        
+                        # Distribute investment proportionally
+                        for ticker, weight in zip(buy_tickers, weights):
+                            # Each ticker gets its proportional share
+                            portfolio_percentage = (weight / weight_sum) * actual_investment
+                            # Add to existing holdings (or create new)
+                            current_holdings[ticker] = current_holdings.get(ticker, 0) + portfolio_percentage
                     
                     else:
-                        # For Initial, Rebalance, Sell & Buy - use weights as-is
+                        # For Initial, Rebalance, Sell & Buy - weights are direct percentages
+                        # Normalize weights to sum to 100 (or less if user wants cash)
+                        weight_sum = sum(weights)
                         for ticker, weight in zip(buy_tickers, weights):
-                            current_holdings[ticker] = weight
+                            # Use weights as-is, they represent % of portfolio (or proceeds for Sell&Buy)
+                            normalized_weight = (weight / weight_sum) * 100 if weight_sum > 0 else 0
+                            current_holdings[ticker] = normalized_weight
                 
                 # Calculate total invested percentage
                 total_invested = sum(current_holdings.values()) if current_holdings else 0
@@ -1491,9 +1513,10 @@ TRANSACTION HISTORY
 st.markdown("---")
 st.markdown("""
 <div style='text-align: center; color: #666; font-size: 0.9em; padding: 20px;'>
-    <strong>Professional Portfolio Visualizer v3.0 - Transaction Mode</strong><br>
+    <strong>Professional Portfolio Visualizer v3.1 - FIXED</strong><br>
     Built with ❤️ using Streamlit & yfinance<br>
-    <strong>NEW in v3.0:</strong> Cash Interest Tracking • Monthly Heatmaps • Risk Analysis (VaR/CVaR) • CSV/TXT Export • Benchmark Rolling Charts<br>
+    <strong>FIXED in v3.1:</strong> Buy action now correctly handles partial cash investment<br>
+    <strong>v3.0 features:</strong> Cash Interest Tracking • Monthly Heatmaps • Risk Analysis (VaR/CVaR) • CSV/TXT Export • Benchmark Rolling Charts<br>
     Multi-period analysis with cash tracking & comprehensive risk metrics<br>
     <em>For educational purposes only. Not financial advice.</em>
 </div>
