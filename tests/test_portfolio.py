@@ -6,11 +6,15 @@ import pandas as pd
 
 from analytics import drawdown, monthly_returns, stats
 from market_data import load_prices
-from portfolio import COLUMNS, PortfolioError, backtest, export_log, import_log, parse_log, quoted_symbols
+from portfolio import (
+    BUY_AND_HOLD, COLUMNS, LOG_COLUMNS, PortfolioError, backtest, export_log, import_log,
+    parse_log, quoted_symbols,
+)
 
 
 def log(rows):
-    return parse_log(pd.DataFrame(rows, columns=COLUMNS))
+    columns = LOG_COLUMNS if any(len(row) == len(LOG_COLUMNS) for row in rows) else COLUMNS
+    return parse_log(pd.DataFrame([dict(zip(columns, row)) for row in rows], columns=columns))
 
 
 def simulate(data, rows, dates=None, start=None, end=None, rate=0.0):
@@ -42,6 +46,9 @@ class LedgerTests(unittest.TestCase):
             ("2024-01-09", "Rebalance", "", "A,B", "50,50"),
         ])
         self.assertAlmostEqual(r.ledger.Portfolio.iloc[-1], 112.5)
+        np.testing.assert_allclose(r.ledger[BUY_AND_HOLD], [100, 150, 100])
+        self.assertAlmostEqual(stats(r.ledger[BUY_AND_HOLD])["Max drawdown"], -1/3)
+        self.assertAlmostEqual(stats(r.ledger.Portfolio)["Max drawdown"], -0.25)
 
     def test_weekend_trade_keeps_friday_to_monday_return(self):
         r = simulate({"SPY": [100, 100, 110, 110]}, [
@@ -102,6 +109,8 @@ class LedgerTests(unittest.TestCase):
         self.assertEqual(len(r.positions.columns), 0)
         self.assertAlmostEqual(r.ledger.Cash.iloc[-1], 100 * 1.05**(2/252))
         np.testing.assert_allclose(r.ledger.Portfolio, r.ledger.Cash)
+        np.testing.assert_allclose(r.ledger[BUY_AND_HOLD], r.ledger.Cash)
+        self.assertTrue(r.no_orders.empty)
 
     def test_replay_before_reporting_window_and_rebase_both_curves(self):
         kwargs = dict(data={"A": [100, 200, 300, 250, 300], "SPY": [10, 20, 50, 55, 60]},
@@ -153,6 +162,70 @@ class LedgerTests(unittest.TestCase):
         self.assertAlmostEqual(r.ledger.Cash.iloc[-1], 106)
         self.assertAlmostEqual(r.ledger.Portfolio.iloc[-1], 106)
 
+    def test_original_shares_survive_a_same_close_sale_and_a_later_reporting_start(self):
+        data = {"A": [100, 200, 300], "B": [100, 100, 80]}
+        rows = [("2024-01-08", "Initial", "", "A", "80"),
+                ("2024-01-08", "Sell & Buy", "A", "B", "100")]
+        full = simulate(data, rows)
+        np.testing.assert_allclose(full.ledger[BUY_AND_HOLD], [100, 180, 260])
+        np.testing.assert_allclose(full.ledger.Portfolio, [100, 100, 84])
+        sliced = simulate(data, rows, start="2024-01-09")
+        np.testing.assert_allclose(sliced.ledger[BUY_AND_HOLD], [100, 100*260/180])
+        np.testing.assert_allclose(sliced.ledger.Portfolio, [100, 84])
+
+    def test_buy_and_hold_accrues_its_own_cash_and_discloses_stale_marks_after_a_sale(self):
+        r = simulate({"A": [100, 120, np.nan]}, [
+            ("2024-01-08", "Buy", "", "A", "50"),
+            ("2024-01-09", "Sell", "A", "", ""),
+        ], rate=5)
+        self.assertAlmostEqual(r.ledger[BUY_AND_HOLD].iloc[-1], 60 + 50 * 1.05**(2/252))
+        self.assertEqual(r.hold_carried, {"A": 1})
+        self.assertEqual(r.carried, {})
+
+    def test_partial_sale_buys_only_from_proceeds_and_preserves_remaining_shares(self):
+        r = simulate({"A": [100, 200, 300], "B": [100, 100, 100]}, [
+            ("2024-01-08", "Initial", "", "A", "50"),
+            ("2024-01-09", "Sell & Buy", "A", "B", "60", "25%"),
+            ("2024-01-10", "Sell", "A", "", ""),
+        ])
+        np.testing.assert_allclose(r.executions.Sold, [0, 25, 112.5])
+        np.testing.assert_allclose(r.executions.Bought, [50, 15, 0])
+        np.testing.assert_allclose(r.ledger.Cash, [50, 60, 172.5])
+        np.testing.assert_allclose(r.positions.A, [50, 75, 0])
+        np.testing.assert_allclose(r.positions.B, [0, 15, 15])
+        np.testing.assert_allclose(r.positions.sum(axis=1) + r.ledger.Cash, r.ledger.Portfolio)
+        self.assertTrue(r.no_orders.empty)
+
+    def test_sell_percentages_apply_independently_to_current_shares(self):
+        r = simulate({"A": [100]*3, "B": [100]*3}, [
+            ("2024-01-08", "Initial", "", "A,B", "50,50"),
+            ("2024-01-09", "Sell", "A,B", "", "", "25,100"),
+            ("2024-01-09", "Sell & Buy", "A", "A", "50", "50"),
+        ])
+        np.testing.assert_allclose(r.executions.Sold, [0, 62.5, 18.75])
+        np.testing.assert_allclose(r.executions.Bought, [100, 0, 9.375])
+        self.assertAlmostEqual(r.positions.A.iloc[-1], 28.125)
+        self.assertAlmostEqual(r.ledger.Cash.iloc[-1], 71.875)
+        np.testing.assert_allclose(r.ledger.Portfolio, 100)
+
+    def test_zero_orders_keep_row_reasons_and_tickers_even_before_the_window(self):
+        r = simulate({"A": [100]*3}, [
+            ("2024-01-08", "Initial", "", "A", "100"),
+            ("2024-01-09", "Buy", "", "UNKNOWN", "100"),
+            ("2024-01-09", "Sell", "A", "", "", "0"),
+            ("2024-01-10", "Sell", "A", "", ""),
+            ("2024-01-10", "Buy", "", "UNKNOWN", "0"),
+            ("2024-01-10", "Rebalance", "", "", ""),
+        ], start="2024-01-10")
+        self.assertEqual(r.no_orders["Log row"].tolist(), [2, 3, 5, 6])
+        self.assertEqual(r.no_orders.Note.tolist(), [
+            "No cash available", "All sell percentages are zero", "All buy weights are zero",
+            "Portfolio already in cash",
+        ])
+        self.assertEqual(r.no_orders["Buy tickers"].iloc[0], "UNKNOWN")
+        self.assertEqual(r.no_orders["Sell order"].iloc[1], "A 0%")
+        self.assertEqual(r.executions["Log row"].tolist(), [4, 5, 6])
+
 
 class InputAndMetricsTests(unittest.TestCase):
     def test_old_csv_round_trip_bom_quoted_fields_blank_cells_and_ticker_na(self):
@@ -160,10 +233,30 @@ class InputAndMetricsTests(unittest.TestCase):
                   '20240108,Initial,,"BRK.B,NA","25, 25"\r\n'
                   '2024-01-09,Buy,,GOOGL,\r\n').encode("utf-8-sig")
         frame = import_log(source)
+        self.assertEqual(export_log(frame).splitlines()[0], b"Date,Action,Sell,Buy,Weights")
         pd.testing.assert_frame_equal(frame, import_log(export_log(frame)))
         first, second = parse_log(frame)
         self.assertEqual(first.buys, ("BRK-B", "NA"))
         self.assertEqual(second.fractions, (1.0,))
+
+    def test_partial_sales_round_trip_with_reordered_csv_columns(self):
+        source = ('sell %,Buy,Date,Weights,Action,Sell\n'
+                  ',A,20240108,,Initial,\n'
+                  '"25%, 100",B,20240109,60,Sell & Buy,"A,C"\n').encode()
+        frame = import_log(source)
+        self.assertEqual(export_log(frame).splitlines()[0], b"Date,Action,Sell,Buy,Weights,Sell %")
+        pd.testing.assert_frame_equal(frame, import_log(export_log(frame)))
+        sale = parse_log(frame)[1]
+        self.assertEqual(sale.sell_fractions, (0.25, 1.0))
+        self.assertEqual(sale.fractions, (0.6,))
+
+    def test_partial_sale_validation_names_the_affected_row(self):
+        first = ("2024-01-08", "Initial", "", "A,B", "")
+        for amounts in ("25", "25,110", "-1,0", "nan,20", "inf,10", "one,20", "20,"):
+            with self.subTest(amounts=amounts), self.assertRaisesRegex(PortfolioError, "Row 2"):
+                log([first, ("2024-01-09", "Sell", "A,B", "", "", amounts)])
+        with self.assertRaisesRegex(PortfolioError, "Row 2"):
+            log([first, ("2024-01-09", "Rebalance", "", "B", "50", "10")])
 
     def test_invalid_rows_dates_weights_and_unquoted_csv(self):
         for weights in ["20,90", "-1,50", "nan,20", "inf,0", "40", "abc,50"]:
