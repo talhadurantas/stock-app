@@ -13,6 +13,9 @@ import pandas as pd
 
 
 COLUMNS = ["Date", "Action", "Sell", "Buy", "Weights"]
+SELL_PERCENT = "Sell %"
+LOG_COLUMNS = [*COLUMNS, SELL_PERCENT]
+BUY_AND_HOLD = "Buy and hold"
 ACTIONS = ("Initial", "Buy", "Sell", "Sell & Buy", "Rebalance")
 SESSIONS_PER_YEAR = 252
 
@@ -25,6 +28,14 @@ class QuoteError(PortfolioError):
     """The requested portfolio cannot be valued using this price response."""
 
 
+class MissingQuotes(QuoteError):
+    """A fresh download may supply the prices needed for these symbols."""
+
+    def __init__(self, tickers, message):
+        super().__init__(message)
+        self.tickers = tuple(tickers)
+
+
 @dataclass(frozen=True)
 class Trade:
     row: int
@@ -33,15 +44,18 @@ class Trade:
     sells: tuple[str, ...]
     buys: tuple[str, ...]
     fractions: tuple[float, ...]
+    sell_fractions: tuple[float, ...] = ()   # Blank on legacy rows means sell all.
 
 
 @dataclass
 class Backtest:
-    ledger: pd.DataFrame       # Closing portfolio, benchmark and cash, rebased to 100
+    ledger: pd.DataFrame       # Strategy values and the active portfolio's cash
     positions: pd.DataFrame    # Closing value by ticker, in the same units
     executions: pd.DataFrame   # Post-trade snapshots, including trades on the same close
     pending: tuple[int, ...]
     carried: dict[str, int]    # Held-position marks carried forward in the report
+    hold_carried: dict[str, int]
+    no_orders: pd.DataFrame    # Includes earlier instructions used to form the opening book
 
 
 def symbol(value: str) -> str:
@@ -64,14 +78,28 @@ def parse_date(value) -> pd.Timestamp:
     raise PortfolioError(f"Invalid date {raw!r}. Use YYYY-MM-DD or YYYYMMDD.")
 
 
+def percentages(text: str, tickers: tuple[str, ...], label: str) -> tuple[float, ...]:
+    parts = text.split(",")
+    if len(parts) != len(tickers):
+        raise PortfolioError(f"{label} needs one percentage per ticker, in the same order.")
+    try:
+        numbers = [float(part.strip().removesuffix("%")) for part in parts]
+    except ValueError as exc:
+        raise PortfolioError(f"{label} needs numeric percentages separated by commas.") from exc
+    if any(not isfinite(n) or n < 0 or n > 100 for n in numbers):
+        raise PortfolioError(f"Each percentage in {label} must be finite and between 0 and 100.")
+    return tuple(n / 100 for n in numbers)
+
+
 def parse_log(frame: pd.DataFrame) -> list[Trade]:
     missing = [name for name in COLUMNS if name not in frame.columns]
     if missing:
         raise PortfolioError("Missing transaction columns: " + ", ".join(missing))
     trades = []
-    for number, values in enumerate(frame[COLUMNS].itertuples(index=False, name=None), 1):
-        raw_date, action, sell, buy, weights = map(cell, values)
-        if not any((raw_date, action, sell, buy, weights)):
+    full_log = frame.reindex(columns=LOG_COLUMNS, fill_value="")
+    for number, values in enumerate(full_log.itertuples(index=False, name=None), 1):
+        raw_date, action, sell, buy, weights, sell_pct = map(cell, values)
+        if not any((raw_date, action, sell, buy, weights, sell_pct)):
             continue
         try:
             day = parse_date(raw_date)
@@ -88,27 +116,20 @@ def parse_log(frame: pd.DataFrame) -> list[Trade]:
                 raise PortfolioError(f"{action} needs a sell ticker.")
             if action in ("Buy", "Sell & Buy") and not buys:
                 raise PortfolioError(f"{action} needs a buy ticker.")
-            if sells and action not in ("Sell", "Sell & Buy"):
-                raise PortfolioError(f"Leave Sell blank for {action}.")
+            if (sells or sell_pct) and action not in ("Sell", "Sell & Buy"):
+                raise PortfolioError(f"Leave Sell and Sell % blank for {action}.")
             if action == "Sell" and (buys or weights):
                 raise PortfolioError("Leave Buy and Weights blank for a sale.")
             if weights:
-                try:
-                    percentages = tuple(float(w.strip()) for w in weights.split(","))
-                except ValueError as exc:
-                    raise PortfolioError("Enter numeric percentages separated by commas.") from exc
-                if len(percentages) != len(buys):
-                    raise PortfolioError("Enter one percentage for each buy ticker.")
-                if any(not isfinite(w) or w < 0 or w > 100 for w in percentages):
-                    raise PortfolioError("Each percentage must be finite and between 0 and 100.")
-                if fsum(percentages) > 100 + 1e-10:
+                fractions = percentages(weights, buys, "Buy weights")
+                if fsum(fractions) > 1 + 1e-12:
                     raise PortfolioError("Percentages add up to more than 100.")
-                fractions = tuple(w / 100 for w in percentages)
             else:
                 fractions = (1 / len(buys),) * len(buys) if buys else ()
+            sell_fractions = percentages(sell_pct, sells, SELL_PERCENT) if sell_pct else ()
         except PortfolioError as exc:
             raise PortfolioError(f"Row {number}: {exc}") from exc
-        trades.append(Trade(number, day, action, sells, buys, fractions))
+        trades.append(Trade(number, day, action, sells, buys, fractions, sell_fractions))
     if not trades:
         raise PortfolioError("Add a transaction to the log.")
     trades.sort(key=lambda t: t.date)  # Python's stable sort preserves same-date input order.
@@ -128,22 +149,27 @@ def import_log(data: bytes) -> pd.DataFrame:
         if any(c.casefold() not in names for c in COLUMNS):
             raise PortfolioError("The transaction CSV needs these columns: " + ", ".join(COLUMNS) + ".")
         slots = [names.index(c.casefold()) for c in COLUMNS]
+        sell_slot = names.index(SELL_PERCENT.casefold()) if SELL_PERCENT.casefold() in names else None
         rows = []
         for fields in reader:
             if not any(field.strip() for field in fields):
                 continue
             if len(fields) != len(header):
                 raise PortfolioError(f"CSV line {reader.line_num}: expected {len(header)} fields. Quote fields containing commas.")
-            rows.append([fields[i].strip() for i in slots])
+            row = [fields[i].strip() for i in slots]
+            row.append(fields[sell_slot].strip() if sell_slot is not None else "")
+            rows.append(row)
     except (UnicodeDecodeError, csv.Error) as exc:
         raise PortfolioError("Could not read the file as a UTF-8 transaction CSV.") from exc
-    frame = pd.DataFrame(rows, columns=COLUMNS, dtype="string")
+    frame = pd.DataFrame(rows, columns=LOG_COLUMNS, dtype="string")
     parse_log(frame)  # Validate the entire replacement before the editor changes.
     return frame
 
 
 def export_log(frame: pd.DataFrame) -> bytes:
-    return frame[COLUMNS].to_csv(index=False, lineterminator="\n").encode("utf-8")
+    has_sell_pct = SELL_PERCENT in frame and frame[SELL_PERCENT].map(cell).ne("").any()
+    columns = LOG_COLUMNS if has_sell_pct else COLUMNS
+    return frame[columns].to_csv(index=False, lineterminator="\n").encode("utf-8")
 
 
 def quoted_symbols(trades: list[Trade], benchmark: str, end) -> tuple[str, ...]:
@@ -159,11 +185,16 @@ def quoted_symbols(trades: list[Trade], benchmark: str, end) -> tuple[str, ...]:
 def execute(trade: Trade, day, cash, units, values, quotes):
     """Execute at today's close. Values and units describe the same positions."""
     total = cash + fsum(values.values())
-    sells = tuple(units) if trade.action == "Rebalance" else trade.sells
+    if trade.action == "Rebalance":
+        requested_sales = dict.fromkeys(units, 1.0)
+    else:
+        fractions = trade.sell_fractions or (1.0,) * len(trade.sells)
+        requested_sales = dict(zip(trade.sells, fractions))
+    sells = {t: f for t, f in requested_sales.items() if f > 0}
     missing = [t for t in sells if t not in units]
     if missing:
         raise PortfolioError(f"Row {trade.row}: cannot sell an unheld position ({', '.join(missing)}).")
-    sold = fsum(values[t] for t in sells)
+    sold = fsum(values[t] * fraction for t, fraction in sells.items())
     if trade.action == "Buy":
         budget = cash
     elif trade.action == "Sell & Buy":
@@ -174,10 +205,14 @@ def execute(trade: Trade, day, cash, units, values, quotes):
     needs_quote = set(sells).union(orders)
     unavailable = sorted(t for t in needs_quote if not np.isfinite(quotes.get(t, np.nan)))
     if unavailable:
-        raise QuoteError(f"Row {trade.row}: no fresh adjusted close for {', '.join(unavailable)} on {day.date()}. Check the symbol, listing date or trading calendar.")
-    for ticker in sells:
-        del units[ticker]
-        del values[ticker]
+        raise MissingQuotes(unavailable, f"Row {trade.row}: no fresh adjusted close for {', '.join(unavailable)} on {day.date()}. Check the symbol, listing date or trading calendar.")
+    for ticker, fraction in sells.items():
+        if fraction == 1:
+            del units[ticker]
+            del values[ticker]
+        else:
+            units[ticker] *= 1 - fraction
+            values[ticker] *= 1 - fraction
     for ticker, amount in orders.items():
         units[ticker] = units.get(ticker, 0.0) + amount / quotes[ticker]
         values[ticker] = values.get(ticker, 0.0) + amount
@@ -185,9 +220,20 @@ def execute(trade: Trade, day, cash, units, values, quotes):
     cash = fsum((cash, sold, -spent))
     if abs(cash) <= total * 1e-12:
         cash = 0.0
-    note = "No cash available" if trade.action == "Buy" and budget == 0 else ""
+    note = ""
+    if sold == 0 and spent == 0:
+        if trade.action == "Buy":
+            note = "No cash available" if budget == 0 else "All buy weights are zero"
+        elif trade.buys and trade.action in ("Initial", "Rebalance"):
+            note = "All buy weights are zero"
+        elif trade.action == "Rebalance":
+            note = "Portfolio already in cash"
+        elif trade.sells:
+            note = "All sell percentages are zero"
     snapshot = {
         "Log row": trade.row, "Requested": trade.date, "Executed": day, "Action": trade.action,
+        "Sell order": ", ".join(f"{t} {f*100:g}%" for t, f in requested_sales.items()),
+        "Buy tickers": ", ".join(trade.buys),
         "Sold": sold, "Bought": spent, "Cash after": cash,
         "Cash %": 100 * cash / total,
         "Holdings after": ", ".join(f"{t} {100*v/total:.2f}%" for t, v in sorted(values.items())) or "All cash",
@@ -206,7 +252,7 @@ def backtest(prices: pd.DataFrame, trades: list[Trade], benchmark: str, start, e
     if not trades or trades[0].date > end:
         raise PortfolioError("The log has no transaction on or before the end date.")
     if prices.empty or bench not in prices:
-        raise QuoteError(f"No adjusted prices available for benchmark {bench}.")
+        raise MissingQuotes((bench,), f"No adjusted prices available for benchmark {bench}.")
     prices = prices.copy()
     prices.index = pd.DatetimeIndex(prices.index).tz_localize(None).normalize()
     if prices.index.has_duplicates or prices.columns.has_duplicates:
@@ -219,7 +265,7 @@ def backtest(prices: pd.DataFrame, trades: list[Trade], benchmark: str, start, e
     benchmark_prices = prices[bench].dropna().loc[trades[0].date:end]
     calendar = benchmark_prices.index
     if calendar.empty or calendar[-1] < start:
-        raise QuoteError("No benchmark sessions overlap the funded portfolio and selected dates.")
+        raise MissingQuotes((bench,), f"No {bench} benchmark closes overlap the funded portfolio and selected dates.")
     # An ETF launched years after the log began must not collapse old trades onto its launch date.
     first_order = trades[0].date
     if calendar[0] > first_order and not prices.loc[:first_order, bench].notna().any():
@@ -243,33 +289,45 @@ def backtest(prices: pd.DataFrame, trades: list[Trade], benchmark: str, start, e
     raw_rows = raw.itertuples(index=False, name=None) if tickers else (() for _ in calendar)
     mark_rows = marks.itertuples(index=False, name=None) if tickers else (() for _ in calendar)
     cash, units = 100.0, {}
+    hold_cash, original_units = 100.0, {}
     cash_factor = (1 + cash_rate / 100) ** (1 / SESSIONS_PER_YEAR)
-    daily, positions, snapshots, carried = [], [], [], {}
+    daily, positions, snapshots = [], [], []
+    carried, hold_carried = {}, {}
     for i, (day, observed, marked) in enumerate(zip(calendar, raw_rows, mark_rows)):
         quotes = dict(zip(tickers, observed))
         marks_today = dict(zip(tickers, marked))
         if i:
             cash *= cash_factor
+            hold_cash *= cash_factor
         values = {ticker: quantity * marks_today[ticker] for ticker, quantity in units.items()}
         if day >= start:
-            for ticker in units:
-                if not np.isfinite(quotes[ticker]):
-                    carried[ticker] = carried.get(ticker, 0) + 1
+            for owned, counts in ((units, carried), (original_units, hold_carried)):
+                for ticker in owned:
+                    if not np.isfinite(quotes[ticker]):
+                        counts[ticker] = counts.get(ticker, 0) + 1
         for trade in scheduled.get(day, ()):
             cash, snapshot = execute(trade, day, cash, units, values, quotes)
-            if day >= start:
-                snapshots.append(snapshot)
+            if trade.row == trades[0].row:
+                original_units = units.copy()
+                hold_cash = cash
+            snapshots.append(snapshot)
         if day >= start:
-            daily.append((day, cash + fsum(values.values()), cash))
+            held_value = hold_cash + fsum(q * marks_today[t] for t, q in original_units.items())
+            daily.append((day, cash + fsum(values.values()), cash, held_value))
             positions.append(values.copy())
 
-    ledger = pd.DataFrame(daily, columns=["Date", "Portfolio", "Cash"]).set_index("Date")
+    ledger = pd.DataFrame(daily, columns=["Date", "Portfolio", "Cash", BUY_AND_HOLD]).set_index("Date")
     scale = 100 / ledger["Portfolio"].iloc[0]
-    ledger *= scale
+    ledger[["Portfolio", "Cash"]] *= scale
+    ledger[BUY_AND_HOLD] = 100 * (ledger[BUY_AND_HOLD] / ledger[BUY_AND_HOLD].iloc[0])
     benchmark_window = benchmark_prices.reindex(ledger.index)
     ledger["Benchmark"] = 100 * (benchmark_window / benchmark_window.iloc[0])
     assets = pd.DataFrame(positions, index=ledger.index, columns=tickers, dtype=float).fillna(0) * scale
-    events = pd.DataFrame(snapshots, columns=["Log row", "Requested", "Executed", "Action", "Sold", "Bought", "Cash after", "Cash %", "Holdings after", "Note"])
+    history = pd.DataFrame(snapshots)
+    no_orders = history.loc[history["Note"].ne(""),
+                            ["Log row", "Requested", "Executed", "Action", "Sell order", "Buy tickers", "Note"]].copy()
+    events = history.loc[history["Executed"] >= ledger.index[0]].copy()
     if not events.empty:
         events[["Sold", "Bought", "Cash after"]] *= scale
-    return Backtest(ledger[["Portfolio", "Benchmark", "Cash"]], assets, events, tuple(pending), carried)
+    return Backtest(ledger[["Portfolio", "Benchmark", "Cash", BUY_AND_HOLD]],
+                    assets, events, tuple(pending), carried, hold_carried, no_orders)

@@ -8,10 +8,10 @@ from matplotlib.figure import Figure
 from matplotlib.ticker import PercentFormatter
 
 from analytics import PERCENT_METRICS, RISK_FREE_RATE, drawdown, monthly_returns, rolling_metrics, stats
-from market_data import load_prices
+from market_data import analyze_portfolio, load_prices
 from portfolio import (
-    ACTIONS, COLUMNS, PortfolioError, QuoteError, backtest, export_log, import_log,
-    parse_log, quoted_symbols, symbol,
+    ACTIONS, BUY_AND_HOLD, COLUMNS, LOG_COLUMNS, SELL_PERCENT, PortfolioError,
+    export_log, import_log, parse_log, symbol,
 )
 
 
@@ -35,7 +35,8 @@ EXAMPLES = {
 
 
 def table(rows):
-    return pd.DataFrame(rows, columns=COLUMNS, dtype="string")
+    frame = pd.DataFrame(rows, columns=COLUMNS, dtype="string")
+    return frame.reindex(columns=LOG_COLUMNS, fill_value="")
 
 
 def replace_draft(frame, message):
@@ -57,18 +58,23 @@ def editor():
         st.markdown(
             "**Initial** and **Rebalance** allocate percentages of total value. "
             "Leave Buy empty to hold everything in cash. **Buy** spends percentages of available cash. "
-            "**Sell** liquidates the named positions. **Sell & Buy** spends percentages of the sale proceeds. "
-            "Enter tickers and percentages in matching comma-separated lists. Blank weights split the full budget equally."
+            "**Sell** and **Sell & Buy** use the Sell % of each named position. "
+            "Enter 25 to sell one quarter, or leave the field blank to sell in full. "
+            "**Sell & Buy** applies the buy weights to those sale proceeds. "
+            "List percentages in ticker order. Blank buy weights split the available budget equally."
         )
     edited = st.data_editor(
-        state.editor_seed, key=f"log_{state.editor_version}", num_rows="dynamic",
-        hide_index=True, width="stretch",
+        state.editor_seed.reindex(columns=LOG_COLUMNS, fill_value=""),
+        key=f"log_{state.editor_version}", num_rows="dynamic", hide_index=True, width="stretch",
+        column_order=["Date", "Action", "Sell", SELL_PERCENT, "Buy", "Weights"],
         column_config={
             "Date": st.column_config.TextColumn("Date", help="YYYY-MM-DD or YYYYMMDD"),
             "Action": st.column_config.SelectboxColumn("Action", options=ACTIONS),
             "Sell": st.column_config.TextColumn("Sell tickers"),
+            SELL_PERCENT: st.column_config.TextColumn("Sell % of position",
+                help="One percentage per sell ticker. For example, 25 sells one quarter. Blank sells 100%."),
             "Buy": st.column_config.TextColumn("Buy tickers"),
-            "Weights": st.column_config.TextColumn("Weights %", help="In the same order as the buy tickers"),
+            "Weights": st.column_config.TextColumn("Buy weights %", help="In the same order as the buy tickers"),
         },
     )
     add, clear, tech, value = st.columns(4)
@@ -100,14 +106,16 @@ def growth_chart(result, benchmark, markers, shade):
     ledger = result.ledger
     fig = Figure(figsize=(10, 4.2), layout="constrained")
     ax = fig.subplots()
-    ax.plot(ledger.index, ledger["Portfolio"], label="Portfolio", color=BLUE, linewidth=2.4)
-    ax.plot(ledger.index, ledger["Benchmark"], label=benchmark, color=ORANGE, linestyle="--", linewidth=1.6)
-    if len(ledger) == 1:
-        ax.scatter(ledger.index, ledger["Portfolio"], color=BLUE)
+    marker = "o" if len(ledger) == 1 else None
+    ax.plot(ledger.index, ledger["Portfolio"], label="Portfolio", color=BLUE, linewidth=2.4, marker=marker)
+    ax.plot(ledger.index, ledger[BUY_AND_HOLD], label=BUY_AND_HOLD, color="#7451a4", linestyle="-.",
+            linewidth=1.9, marker=marker)
+    ax.plot(ledger.index, ledger["Benchmark"], label=benchmark, color=ORANGE, linestyle="--",
+            linewidth=1.6, marker=marker)
     if shade:
         declines, peak, trough = drawdown(ledger["Portfolio"])
         if declines.min() < 0:
-            ax.axvspan(peak, trough, color="#bf6870", alpha=0.18, label="Max drawdown")
+            ax.axvspan(peak, trough, color="#bf6870", alpha=0.18, label="Portfolio max drawdown")
     if markers and not result.executions.empty:
         for day, group in result.executions.groupby("Executed", sort=False):
             ax.axvline(day, color="#66757b", linewidth=0.8, linestyle=":", alpha=0.65)
@@ -125,6 +133,20 @@ def formatted(name, value):
     if not np.isfinite(value):
         return "—"
     return f"{value:.2%}" if name in PERCENT_METRICS else f"{value:,.2f}"
+
+
+def show_no_orders(rows):
+    if rows.empty:
+        return
+    if len(rows) == 1:
+        row = rows.iloc[0]
+        tickers = " / ".join(filter(None, (row["Sell order"], row["Buy tickers"])))
+        detail = f"{row['Action']} {tickers}".strip()
+        st.warning(f"Row {row['Log row']} · {row['Executed']:%d %b %Y} · {detail} placed no orders. {row['Note']}.")
+    else:
+        st.warning(f"{len(rows)} transactions placed no orders.")
+        detail = rows.assign(Requested=rows["Requested"].dt.date, Executed=rows["Executed"].dt.date)
+        st.dataframe(detail.rename(columns={"Note": "Reason"}), hide_index=True)
 
 
 def risk_charts(result, bench, compare_rolling):
@@ -193,23 +215,35 @@ def risk_charts(result, bench, compare_rolling):
 def show_results(result, bench, cash_rate, markers, shade, compare_rolling, draft):
     ledger = result.ledger
     first, last = ledger.index[0].date(), ledger.index[-1].date()
-    summary = pd.DataFrame({name: stats(ledger[name]) for name in ("Portfolio", "Benchmark")})
+    strategies = ("Portfolio", BUY_AND_HOLD, "Benchmark")
+    summary = pd.DataFrame({name: stats(ledger[name]) for name in strategies})
+    summary.loc["Ending value per 100"] = ledger.iloc[-1].reindex(strategies)
+    pretty = pd.DataFrame({name: [formatted(metric, v) for metric, v in col.items()]
+                           for name, col in summary.items()}, index=summary.index)
+    pretty = pretty.rename(columns={"Benchmark": bench + " (benchmark)"})
     port, reference = summary["Portfolio"], summary["Benchmark"]
     spread = port["Total return"] - reference["Total return"]
     st.divider()
     st.header("Performance")
-    st.caption(f"{first:%d %b %Y} – {last:%d %b %Y} · {len(ledger):,} benchmark closes · Starting value of 100 for both series")
+    st.caption(f"{first:%d %b %Y} – {last:%d %b %Y} · {len(ledger):,} benchmark closes")
     top = st.columns(4)
     top[0].metric("Portfolio return", formatted("Total return", port["Total return"]))
     top[1].metric(f"{bench} return", formatted("Total return", reference["Total return"]))
     top[2].metric("Return difference", f"{spread*100:+.2f} pp")
-    top[3].metric("Max drawdown", formatted("Max drawdown", port["Max drawdown"]))
+    top[3].metric("Portfolio max drawdown", formatted("Max drawdown", port["Max drawdown"]))
+    show_no_orders(result.no_orders)
+    st.subheader("Strategy comparison")
+    st.caption("Buy and hold keeps the positions from your first transaction. Any cash left earns the same "
+               "interest rate. All three start at 100 on the first close in the selected window.")
+    comparison = pretty.loc[["Ending value per 100", "Max drawdown"]].T.rename_axis("Strategy")
+    st.dataframe(comparison.reset_index(), hide_index=True)
     growth_chart(result, bench, markers, shade)
     if result.pending:
         st.info("Rows outside the available closing dates: " + ", ".join(map(str, result.pending)) + ".")
-    if result.carried:
-        details = ", ".join(f"{ticker} ({n})" for ticker, n in sorted(result.carried.items()))
-        st.warning("Held positions valued using a previous close on these sessions: " + details + ".")
+    for title, carried in (("Portfolio", result.carried), (BUY_AND_HOLD, result.hold_carried)):
+        if carried:
+            details = ", ".join(f"{ticker} ({n})" for ticker, n in sorted(carried.items()))
+            st.warning(f"{title} used a previous close to value these holdings (number of sessions): {details}.")
     with st.expander("Holdings and transaction history", expanded=True):
         allocations = result.positions.iloc[-1]
         holdings = [(ticker, value) for ticker, value in allocations.items() if value > 0]
@@ -228,11 +262,10 @@ def show_results(result, bench, cash_rate, markers, shade, compare_rolling, draf
             st.dataframe(events.round(3), hide_index=True)
         cash_weight = ledger["Cash"] / ledger["Portfolio"]
         st.caption(f"Average session-end allocation: {1-cash_weight.mean():.1%} invested and {cash_weight.mean():.1%} cash.")
-    pretty = pd.DataFrame({name: [formatted(metric, v) for metric, v in col.items()]
-                           for name, col in summary.items()}, index=summary.index).rename(columns={"Benchmark": bench + " (benchmark)"})
     with st.expander("Detailed statistics"):
         st.dataframe(pretty)
-        for name, title in (("Portfolio", "Portfolio"), ("Benchmark", bench)):
+        for name in strategies:
+            title = bench if name == "Benchmark" else name
             values = ledger[name]
             declines, peak, trough = drawdown(values)
             if declines.min() < 0:
@@ -243,20 +276,26 @@ def show_results(result, bench, cash_rate, markers, shade, compare_rolling, draf
         st.caption(f"Risk metrics use 252 sessions per year and a {RISK_FREE_RATE:.0%} annual risk-free assumption. A dash indicates an undefined metric.")
     risk_charts(result, bench, compare_rolling)
     with st.expander("Download results"):
-        out = ledger.rename(columns=PERFORMANCE_NAMES).copy()
+        out = ledger[list(PERFORMANCE_NAMES)].rename(columns=PERFORMANCE_NAMES).copy()
         out["Portfolio Daily Return"] = ledger["Portfolio"].pct_change(fill_method=None)
         out["Benchmark Daily Return"] = ledger["Benchmark"].pct_change(fill_method=None)
         out = out.join(result.positions.add_prefix("Position value: "))
+        out["Buy and Hold Value"] = ledger[BUY_AND_HOLD]
+        out["Buy and Hold Daily Return"] = ledger[BUY_AND_HOLD].pct_change(fill_method=None)
         report = "\n".join([
             "PORTFOLIO VISUALIZER", f"{first} to {last}", f"Benchmark: {bench}",
             f"Cash rate: {cash_rate:.2f}% per year, compounded each benchmark session.",
             "Values are per 100 invested at the first reported close.",
+            "Buy and hold keeps the positions and cash left by the first transaction.",
             f"Portfolio minus benchmark: {spread * 100:+.2f} percentage points.",
             f"Average cash allocation: {cash_weight.mean():.2%}", "", pretty.to_string(),
             "", "Executed transactions in the reporting window",
             result.executions.to_string(index=False) if not result.executions.empty else "None in the window.",
+            "", "Transactions that placed no orders (including earlier rows replayed for the opening holdings)",
+            result.no_orders.to_string(index=False) if not result.no_orders.empty else "None",
             "", "Unexecuted row numbers: " + (", ".join(map(str, result.pending)) or "None"),
             "Carried-forward marks (ticker and number of sessions): " + (str(result.carried) if result.carried else "None"),
+            "Buy-and-hold carried-forward marks: " + (str(result.hold_carried) if result.hold_carried else "None"),
         ])
         left, middle, right = st.columns(3)
         left.download_button("Daily ledger CSV", out.to_csv(index_label="Date"), f"portfolio_{first}_{last}.csv",
@@ -269,7 +308,7 @@ def show_results(result, bench, cash_rate, markers, shade, compare_rolling, draf
 
 def main():
     st.title("Portfolio Visualizer")
-    st.caption("Replay your transactions and compare the growth of 100 against a benchmark.")
+    st.caption("Compare your transactions with holding your original investments and with a market benchmark.")
     with st.sidebar:
         st.header("Analysis settings")
         start = st.date_input("Start date", date(2013, 1, 1), min_value=date(1900, 1, 1),
@@ -281,7 +320,7 @@ def main():
                                value=4.5, step=0.25, key="cash_rate")
         st.subheader("Chart settings")
         markers = st.checkbox("Mark trades", True)
-        shade = st.checkbox("Highlight max drawdown", False)
+        shade = st.checkbox("Highlight portfolio max drawdown", False)
         compare = st.checkbox("Show benchmark on rolling charts", True)
         with st.expander("Valuation assumptions"):
             st.write("Trades execute at the next benchmark close on or after the date entered. "
@@ -302,20 +341,14 @@ def main():
     except PortfolioError as exc:
         error = str(exc)
         st.warning(error)
-    signature = (export_log(edited), start, end, bench, rate)
+    signature = (2, export_log(edited), start, end, bench, rate)
     if st.button("Run analysis", key="run", type="primary", disabled=error is not None):
         st.session_state.pop("analysis", None)
-        tickers = quoted_symbols(trades, bench, end)
-        # A prior quote distinguishes an ordinary opening holiday from a younger benchmark.
-        fetch_from = (trades[0].date - pd.Timedelta(days=30)).date()
         try:
             with st.spinner("Loading adjusted prices and replaying transactions…"):
-                prices = get_prices(tickers, fetch_from, end)
-                result = backtest(prices, trades, bench, start, end, rate)
+                result = analyze_portfolio(trades, bench, start, end, rate,
+                                           cached_download=get_prices, clear_cache=get_prices.clear)
             st.session_state.analysis = (signature, result)
-        except QuoteError as exc:
-            get_prices.clear(tickers, fetch_from, end)
-            st.error(str(exc))
         except PortfolioError as exc:
             st.error(str(exc))
     previous = st.session_state.get("analysis")
