@@ -3,7 +3,8 @@
 import pandas as pd
 import yfinance as yf
 
-from portfolio import MissingQuotes, QuoteError, backtest, quoted_symbols
+from currencies import Currencies, FX_TICKER
+from portfolio import MissingQuotes, PortfolioError, QuoteError, backtest, quoted_symbols
 
 
 def load_prices(tickers: tuple[str, ...], start, end) -> pd.DataFrame:
@@ -31,17 +32,48 @@ def load_prices(tickers: tuple[str, ...], start, end) -> pd.DataFrame:
     return close
 
 
-def analyze_portfolio(trades, benchmark, start, end, cash_rate, *, cached_download=load_prices, clear_cache=None):
-    tickers = quoted_symbols(trades, benchmark, end)
-    # A prior close distinguishes an opening holiday from a younger benchmark.
-    fetch_from = (trades[0].date - pd.Timedelta(days=30)).date()
+def analyze_portfolio(trades, benchmark, start, end, cash_rate, *, cached_download=load_prices, clear_cache=None,
+                      initial_cash=100.0, currencies=Currencies()):
+    result, _, _ = analyze_scenarios(trades, None, benchmark, start, end, cash_rate, initial_cash, currencies,
+                                     cached_download=cached_download, clear_cache=clear_cache)
+    return result
+
+
+def analyze_scenarios(trades, scenario, benchmark, start, end, cash_rate, initial_cash, currencies, *,
+                      cached_download=load_prices, clear_cache=None):
+    """Replay both versions against one price snapshot. A bad alternative leaves the original available."""
+    if not trades:
+        raise PortfolioError("Add a transaction to the original log.")
+    tickers = set(quoted_symbols(trades, benchmark, end))
+    need_fx = currencies.needs_fx(tickers)
+    scenario_error = None
+    if scenario is not None:
+        extra = set(quoted_symbols(scenario, benchmark, end))
+        try:
+            extra_fx = currencies.needs_fx(extra)
+        except PortfolioError as exc:
+            scenario, scenario_error = None, str(exc)
+        else:
+            tickers.update(extra)
+            need_fx = need_fx or extra_fx
+    if need_fx:
+        tickers.add(FX_TICKER)
+    tickers = tuple(sorted(tickers))
+    funding = trades[0].date
+    fetch_from = (funding - pd.Timedelta(days=30)).date()
+    settings = dict(initial_cash=initial_cash, currencies=currencies, funding_date=funding)
     prices = pd.DataFrame()
     retried = set()
     while True:
+        primary = None
         try:
             if not retried:
                 prices = cached_download(tickers, fetch_from, end)
-            return backtest(prices, trades, benchmark, start, end, cash_rate)
+            primary = backtest(prices, trades, benchmark, start, end, cash_rate, **settings)
+            alternative = None
+            if scenario is not None:
+                alternative = backtest(prices, scenario, benchmark, start, end, cash_rate, **settings)
+            return primary, alternative, scenario_error
         except MissingQuotes as exc:
             if not retried and clear_cache is not None:
                 clear_cache(tickers, fetch_from, end)
@@ -51,13 +83,17 @@ def analyze_portfolio(trades, benchmark, start, end, cash_rate, *, cached_downlo
                 try:
                     fresh = load_prices(missing, fetch_from, end)
                 except MissingQuotes:
-                    pass  # Report the original missing trade close, including its row and date.
+                    pass  # Keep the original row and the date of the missing close.
                 else:
                     prices = fresh if prices.empty else fresh.combine_first(prices)
                     continue
-            names = ", ".join(exc.tickers)
-            raise QuoteError(f"{exc} Prices for {names} are still unavailable after one automatic retry.") from exc
-        except QuoteError:
-            if not retried and clear_cache is not None:
+            message = f"{exc} Prices for {', '.join(exc.tickers)} are still unavailable after one automatic retry."
+            if primary is not None:
+                return primary, None, message
+            raise QuoteError(message) from exc
+        except PortfolioError as exc:
+            if primary is not None:
+                return primary, None, str(exc)
+            if isinstance(exc, QuoteError) and not retried and clear_cache is not None:
                 clear_cache(tickers, fetch_from, end)
             raise

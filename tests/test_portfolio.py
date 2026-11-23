@@ -13,7 +13,7 @@ from portfolio import (
 
 
 def log(rows):
-    columns = LOG_COLUMNS if any(len(row) == len(LOG_COLUMNS) for row in rows) else COLUMNS
+    columns = LOG_COLUMNS[:max(map(len, rows), default=len(COLUMNS))]
     return parse_log(pd.DataFrame([dict(zip(columns, row)) for row in rows], columns=columns))
 
 
