@@ -1,5 +1,6 @@
 """Exercise the deployed public app after a merge, using only example transactions."""
 
+import os
 import re
 import time
 from datetime import date
@@ -10,7 +11,7 @@ from merhaba import EXAMPLES, table
 from projects import duplicate_log, save_project
 
 
-APP_URL = "https://stock-app-drkienpnjsbecpxcxo3ina.streamlit.app/"
+APP_URL = os.environ.get("PORTFOLIO_APP_URL", "https://stock-app-drkienpnjsbecpxcxo3ina.streamlit.app/")
 
 
 def live_frame(page):
@@ -20,7 +21,7 @@ def live_frame(page):
     woke = False
     while time.monotonic() < deadline:
         for frame in page.frames:
-            if frame.get_by_text("Logarithmic growth chart", exact=True).count():
+            if frame.get_by_text("Save and reopen comparisons", exact=True).count():
                 return frame
             wake = frame.get_by_role("button", name="Yes, get this app back up!")
             if not woke and wake.count() and wake.is_visible():
@@ -40,16 +41,20 @@ def replay(frame, original, skip, start, end, initial, rate, *, name, report="US
     settings = dict(start_date=start, end_date=end, benchmark="SPY", cash_rate=rate, starting_cash=initial,
                     account_currency="USD", report_currency=report, currency_overrides="")
     blob = save_project(original, variant, settings)
-    open_button = frame.get_by_role("button", name="Open saved comparison", exact=True)
-    if not open_button.is_visible():
-        frame.get_by_text("Save or open a comparison", exact=True).click()
     uploader = frame.locator('[data-testid="stFileUploader"]').filter(has_text="Saved comparison JSON")
+    if not uploader.is_visible():
+        frame.get_by_text("Save and reopen comparisons", exact=True).click()
+    open_button = frame.get_by_role("button", name=f"Open {name}.json", exact=True)
     uploader.locator('input[type=file]').set_input_files(
         {"name": f"{name}.json", "mimeType": "application/json", "buffer": blob})
     expect(uploader.get_by_text(f"{name}.json", exact=True)).to_be_visible(timeout=20_000)
     expect(open_button).to_be_enabled(timeout=20_000)
     open_button.click()
-    expect(frame.get_by_text("Opened the saved comparison. Run analysis to replay it.", exact=True)).to_be_visible(timeout=25_000)
+    try:
+        expect(frame.get_by_text(f"Last opened {name}.json", exact=True)).to_be_attached(timeout=12_000)
+    except AssertionError:
+        print(f"Interface after opening {name}.json:\n{frame.locator('body').inner_text()[:8000]}", flush=True)
+        raise
     comparison = frame.get_by_text(re.compile("^Scenario minus original:"))
     expect(comparison).to_have_count(0, timeout=20_000)
     run = frame.get_by_role("button", name="Run analysis", exact=True)
@@ -70,7 +75,7 @@ def replay(frame, original, skip, start, end, initial, rate, *, name, report="US
 
 def main():
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch()
+        browser = playwright.chromium.launch(channel="chrome")
         page = browser.new_page(viewport={"width": 1440, "height": 1050})
         frame = live_frame(page)
         cash = table([("2024-03-04", "Initial", "", "", ""),
