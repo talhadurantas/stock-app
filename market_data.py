@@ -4,7 +4,26 @@ import pandas as pd
 import yfinance as yf
 
 from currencies import Currencies, FX_TICKER
+from transactions import csv_rows, money, parse_date, symbol
 from portfolio import MissingQuotes, PortfolioError, QuoteError, backtest, quoted_symbols
+
+
+def read_price_history(data):
+    """Parse user-supplied native adjusted closes, including benchmarks and FX."""
+    records = []
+    for line, row in csv_rows(data, ["Date", "Ticker", "Adjusted close"]):
+        try:
+            ticker = symbol(row["Ticker"])
+            price = money(row["Adjusted close"], "Adjusted close")
+            if not ticker or price <= 0:
+                raise PortfolioError("Enter a ticker and a positive adjusted close.")
+            records.append((parse_date(row["Date"]), ticker, price))
+        except PortfolioError as exc:
+            raise PortfolioError(f"Price history CSV line {line}: {exc}") from exc
+    frame = pd.DataFrame(records, columns=["Date", "Ticker", "Close"])
+    if frame.empty or frame.duplicated(["Date", "Ticker"]).any():
+        raise PortfolioError("Supply one adjusted close per date and ticker in the price history CSV.")
+    return frame.pivot(index="Date", columns="Ticker", values="Close").sort_index()
 
 
 def load_prices(tickers: tuple[str, ...], start, end) -> pd.DataFrame:
@@ -40,7 +59,7 @@ def analyze_portfolio(trades, benchmark, start, end, cash_rate, *, cached_downlo
 
 
 def analyze_scenarios(trades, scenario, benchmark, start, end, cash_rate, initial_cash, currencies, *,
-                      cached_download=load_prices, clear_cache=None):
+                      cached_download=load_prices, clear_cache=None, price_history=None):
     """Replay both versions against one price snapshot. A bad alternative leaves the original available."""
     if not trades:
         raise PortfolioError("Add a transaction to the original log.")
@@ -65,19 +84,30 @@ def analyze_scenarios(trades, scenario, benchmark, start, end, cash_rate, initia
               for ticker in (*trade.sells, *trade.buys)}
     settings = dict(initial_cash=initial_cash, currencies=currencies, funding_date=funding,
                     valuation_symbols=shared)
-    prices = pd.DataFrame()
+    prices = pd.DataFrame() if price_history is None else price_history
     retried = set()
     while True:
         primary = None
         try:
-            if not retried:
+            if not retried and price_history is None:
                 prices = cached_download(tickers, fetch_from, end)
-            primary = backtest(prices, trades, benchmark, start, end, cash_rate, **settings)
+            original = backtest(prices, trades, benchmark, start, end, cash_rate, **settings)
+            if price_history is not None:
+                supplied_through = prices.reindex(columns=tickers).dropna(how="all").index.max()
+                if original.ledger.index[-1] > supplied_through:
+                    raise QuoteError(f"The uploaded history ends on {supplied_through.date()}. "
+                                     "Select an earlier end date or supply later prices.")
+            primary = original
             alternative = None
             if scenario is not None:
                 alternative = backtest(prices, scenario, benchmark, start, end, cash_rate, **settings)
             return primary, alternative, scenario_error
         except MissingQuotes as exc:
+            if price_history is not None:
+                message = f"{exc} Check the uploaded price history CSV."
+                if primary is not None:
+                    return primary, None, message
+                raise QuoteError(message) from exc
             if not retried and clear_cache is not None:
                 clear_cache(tickers, fetch_from, end)
             missing = tuple(t for t in exc.tickers if t not in retried)
@@ -97,6 +127,6 @@ def analyze_scenarios(trades, scenario, benchmark, start, end, cash_rate, initia
         except PortfolioError as exc:
             if primary is not None:
                 return primary, None, str(exc)
-            if isinstance(exc, QuoteError) and not retried and clear_cache is not None:
+            if price_history is None and isinstance(exc, QuoteError) and not retried and clear_cache is not None:
                 clear_cache(tickers, fetch_from, end)
             raise

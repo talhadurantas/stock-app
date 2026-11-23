@@ -103,6 +103,7 @@ class OrderBook:
         self.serial = count()
         self.pending = set()
         self.reserves = {}
+        self.completion = {}
         possible_holdings = set()
         for i, trade in enumerate(trades):
             if trade.date > sessions.days[-1]:
@@ -115,7 +116,9 @@ class OrderBook:
             times = [sessions.next_close(m, trade.date) for m in markets]
             available = [t for t in times if t is not None]
             order = Order(trade, i)
-            self.push(min(available) if available else None, order, "start")
+            ready = min(available) if available else None
+            self.completion[i] = ready
+            self.push(ready, order, "start")
             possible_holdings.update(trade.buys)
 
     def push(self, when, order, phase, leg=None):
@@ -134,6 +137,15 @@ class OrderBook:
 
     def plan(self, when, order, cash, units):
         trade = order.trade
+        if trade.action == "Rebalance":
+            # A whole-account instruction needs the positions and cash from earlier open orders.
+            earlier = [done for i, done in self.completion.items()
+                       if i < order.sequence and (done is None or done > when)]
+            if earlier:
+                ready = None if None in earlier else max(earlier)
+                self.completion[order.sequence] = ready
+                self.push(ready, order, "start")
+                return
         sells = tuple(units) if trade.action == "Rebalance" else trade.sells
         sale_groups = self.groups(sells, trade.sell_fractions or (1.0,) * len(sells), when)
         buys_after = max((stamp for stamp in sale_groups if stamp is not None), default=when)
@@ -142,6 +154,7 @@ class OrderBook:
         else:
             buy_groups = self.groups(trade.buys, trade.fractions, buys_after)
         stamps = sale_groups.keys() | buy_groups.keys()
+        self.completion[order.sequence] = None if None in stamps else max(stamps, default=when)
         if len(stamps) <= 1:
             self.push(next(iter(stamps), when), order, "whole", trade)
             return
@@ -171,6 +184,9 @@ class OrderBook:
             if phase == "purchase" and order.buy_budget is None:
                 order.buy_budget = max(0.0, order.reserved - leg.fee)
                 order.reserved = order.buy_budget * fsum(order.trade.fractions)
+            if phase in ("sale", "last sale") and order.trade.action == "Rebalance":
+                held = tuple(t for t in leg.sells if t in units)
+                leg = replace(leg, sells=held, sell_fractions=(1.0,) * len(held))
             cash, event = execute(leg, day, cash, units, values, quotes, reserved=locked,
                                   buy_budget=order.buy_budget if phase == "purchase" else None)
             if phase in ("sale", "last sale"):
@@ -179,7 +195,8 @@ class OrderBook:
                     order.buy_budget = max(0.0, order.reserved - leg.fee)
                     order.reserved = order.buy_budget * fsum(order.trade.fractions)
             elif phase == "purchase":
-                order.reserved = max(0.0, order.reserved - event["Bought"])
+                order.reserved = (0.0 if when == self.completion[order.sequence]
+                                  else max(0.0, order.reserved - event["Bought"]))
             if order.reserved > 1e-12:
                 self.reserves[order.sequence] = order.reserved
             else:

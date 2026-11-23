@@ -87,6 +87,18 @@ class MarketTests(unittest.TestCase):
         np.testing.assert_allclose(r.ledger["Buy and hold"],100)
         self.assertAlmostEqual(r.contributions.sum().sum(),0)
 
+    def test_overlapping_rebalances_wait_for_the_preceding_basket(self):
+        rows = [("2024-07-02","Initial","","TR.IS,US","50,50"),
+                ("2024-07-05","Rebalance","","TR.IS,US","30,70"),
+                ("2024-07-05","Rebalance","","TR.IS,US","60,40")]
+        r = replay(rows)
+        old = r.executions.loc[r.executions["Log row"] == 2, "Close (UTC)"]
+        new = r.executions.loc[r.executions["Log row"] == 3, "Close (UTC)"]
+        self.assertGreaterEqual(new.min(), old.max())
+        self.assertAlmostEqual(r.positions["TR.IS"].iloc[-1],60)
+        self.assertAlmostEqual(r.positions["US"].iloc[-1],40)
+        np.testing.assert_allclose(r.ledger.Portfolio,100)
+
     def test_cash_clock_and_shared_valuation_dates_survive_benchmark_and_scenario_changes(self):
         original = [Trade(1,DAYS[0],"Initial",(),(),())]
         variant = [Trade(2,US_HOLIDAY,"Buy",(),("TR.IS",),(0.5,))]
@@ -99,3 +111,22 @@ class MarketTests(unittest.TestCase):
         self.assertEqual(a.ledger.index.tolist(),scenario.ledger.index.tolist())
         pd.testing.assert_series_equal(a.ledger.Portfolio,b.ledger.Portfolio)
         self.assertEqual(a.account.Cash.loc[US_HOLIDAY], a.account.Cash.loc["2024-07-03"])
+
+    def test_uploaded_history_never_retries_yahoo_and_preserves_a_good_original(self):
+        from unittest.mock import patch
+        from market_data import read_price_history
+
+        data = b"Date,Ticker,Adjusted close\n2024-07-02,US,100\n2024-07-03,US,120\n2024-07-02,SPY,10\n2024-07-03,SPY,10\n"
+        prices = read_price_history(data)
+        original = [Trade(1,DAYS[0],"Initial",(),("US",),(1.,))]
+        missing = [Trade(1,DAYS[0],"Initial",(),("ABSENT",),(1.,))]
+        with patch("market_data.yf.download",side_effect=AssertionError("Unexpected network request")) as fetch:
+            r, alt, issue = analyze_scenarios(original,missing,"SPY",DAYS[0],DAYS[1],0,100,Currencies(),price_history=prices)
+            self.assertEqual(r.ledger.Portfolio.iloc[-1],120)
+            self.assertIsNone(alt)
+            self.assertIn("uploaded price history CSV",issue)
+            with self.assertRaisesRegex(PortfolioError, "uploaded history ends on 2024-07-03"):
+                analyze_scenarios(original,None,"SPY",DAYS[0],DAYS[-1],0,100,Currencies(),price_history=prices)
+            fetch.assert_not_called()
+        with self.assertRaisesRegex(PortfolioError,"one adjusted close"):
+            read_price_history(data+b"2024-07-03,US,125\n")

@@ -113,6 +113,31 @@ class RiskTests(unittest.TestCase):
             self.assertEqual(app.number_input(key="hurdle_TRY").value,expected)
             self.assertEqual(app.number_input(key="cash_rate").value,4.5)
 
+    def test_price_upload_and_reporting_hurdle_reach_results_without_a_network_call(self):
+        original = import_log(b"Date,Action,Sell,Buy,Weights\n2024-07-02,Initial,,US,100\n")
+        settings = dict(start_date=date(2024,7,2), end_date=date(2024,7,5), benchmark="SPY",
+                        cash_rate=4.5, starting_cash=100., account_currency="USD", report_currency="TRY",
+                        currency_overrides="", risk_free_rate=32., price_source="Adjusted-close CSV")
+        data = save_project(original, duplicate_log(original), settings)
+        dates = ["2024-07-02","2024-07-03","2024-07-05"]
+        rows = [f"{d},{t},{value}" for d, stock in zip(dates,[10,11,12])
+                for t,value in [("US",stock),("SPY",100),("TRY=X",30)]]
+        prices = ("Date,Ticker,Adjusted close\n" + "\n".join(rows)).encode()
+        with patch("market_data.yf.download",side_effect=AssertionError("Unexpected download")) as remote:
+            app = AppTest.from_file(str(ROOT/"merhaba.py"),default_timeout=30).run()
+            app.file_uploader(key="project_file").upload("snapshot.json",data,"application/json").run()
+            app.button(key="open_project").click().run()
+            self.assertTrue(app.button(key="run").disabled)
+            field = next(f for f in app.file_uploader if f.label == "Price history CSV")
+            field.upload("history.csv",prices,"text/csv").run()
+            app.button(key="run").click().run()
+            self.assertFalse(app.error)
+            self.assertFalse(app.exception)
+            self.assertEqual(app.metric[0].value,"20.00%")
+            self.assertTrue(any("32.00%" in v.value and "TRY" in v.value for v in app.caption))
+            self.assertTrue(any("Information ratio" in table.value.index for table in app.dataframe))
+            remote.assert_not_called()
+
     def test_benchmark_metrics_use_common_close_endpoints(self):
         days = pd.date_range("2024-07-02", periods=4)
         values = pd.Series([100,110,132,121],index=days)

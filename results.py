@@ -109,7 +109,7 @@ def transaction_table(view):
     st.dataframe(events.round({col: 3 for col in events.select_dtypes("number")}), hide_index=True)
 
 
-def show_results(result, alternative, scenario_error, bench, cash_rate, risk_free_rate, markers, shade, compare_rolling, logarithmic, draft):
+def show_results(result, alternative, scenario_error, bench, cash_rate, risk_free_rate, markers, shade, compare_rolling, logarithmic, draft, price_source):
     ledger = result.ledger
     first, last = ledger.index[0].date(), ledger.index[-1].date()
     if alternative is not None:
@@ -131,7 +131,7 @@ def show_results(result, alternative, scenario_error, bench, cash_rate, risk_fre
     spread = port["Total return"] - reference["Total return"]
     st.divider()
     st.header("Performance")
-    st.caption(f"{first:%d %b %Y} – {last:%d %b %Y} · {len(ledger):,} valuation sessions")
+    st.caption(f"{first:%d %b %Y} – {last:%d %b %Y} · {len(ledger):,} valuation sessions · {price_source}")
     top = st.columns(4)
     top[0].metric("Portfolio return", formatted("Total return", port["Total return"]))
     top[1].metric(f"{bench} return", formatted("Total return", reference["Total return"]))
@@ -241,7 +241,7 @@ def show_results(result, alternative, scenario_error, bench, cash_rate, risk_fre
             out = out.join(alternative.account.add_prefix("Scenario account: "))
             out = out.join(alternative.contributions.add_prefix("Scenario return points: "))
         report = "\n".join([
-            "PORTFOLIO VISUALIZER", f"{first} to {last}", f"Benchmark: {bench}",
+            "PORTFOLIO VISUALIZER", f"{first} to {last}", f"Benchmark: {bench}", f"Price source: {price_source}",
             f"Cash rate: {cash_rate:.2f}% per year, compounded on account-market sessions.",
             f"Annual risk-free rate in {result.currency}: {risk_free_rate:.2%}.",
             f"Account amounts in {result.currency}. Performance per 100 is adjusted for external cash flows.",

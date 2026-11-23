@@ -1,4 +1,5 @@
 from datetime import date
+from hashlib import sha256
 
 import pandas as pd
 import streamlit as st
@@ -6,7 +7,7 @@ import streamlit as st
 from results import show_results
 from statement_view import open_demo, show_statement
 from currencies import NATIVE, SUPPORTED, currency_settings
-from market_data import analyze_scenarios, load_prices
+from market_data import analyze_scenarios, load_prices, read_price_history
 from projects import SKIP, duplicate_log, read_project, save_project, skipped_rows
 from portfolio import (
     ACTIONS, COLUMNS, LOG_COLUMNS, SELL_PERCENT, PortfolioError,
@@ -141,6 +142,8 @@ def restore_project(filename, content):
     hurdle = settings.pop("risk_free_rate", 2.0)
     report = NATIVE if settings["account_currency"] == NATIVE else settings["report_currency"]
     state[f"hurdle_{report}"] = hurdle
+    settings.setdefault("price_source", "Yahoo Finance")
+    state.price_upload_version = state.get("price_upload_version", 0) + 1
     state.update(settings)
     state.editor_seed = original
     state.editor_version = state.get("editor_version", 0) + 1
@@ -188,6 +191,13 @@ def main():
                               max_value=date.today(), key="start_date")
         end = st.date_input("End date", min_value=date(1900, 1, 1),
                             max_value=date.today(), key="end_date")
+        source = st.selectbox("Price history", ["Yahoo Finance", "Adjusted-close CSV"], key="price_source")
+        uploaded_prices = None
+        if source == "Adjusted-close CSV":
+            uploaded_prices = st.file_uploader("Price history CSV", type="csv",
+                                               key=f"prices_{state.get('price_upload_version', 0)}")
+            st.caption("Use Date, Ticker, Adjusted close. Include native prices for the holdings and benchmark, "
+                       "plus TRY=X for USD/TRY conversions. Reattach this file when reopening a comparison.")
         bench = symbol(st.text_input("Benchmark ticker", key="benchmark"))
         rate = st.number_input("Annual cash interest (%)", min_value=0.0, max_value=100.0,
                                step=0.25, key="cash_rate")
@@ -219,7 +229,8 @@ def main():
     edited = editor()
     alternate = scenario_editor(edited)
     settings = dict(start_date=start, end_date=end, benchmark=bench, cash_rate=rate, starting_cash=initial_cash,
-                    account_currency=account_ccy, report_currency=report_ccy, currency_overrides=overrides, risk_free_rate=hurdle)
+                    account_currency=account_ccy, report_currency=report_ccy, currency_overrides=overrides, risk_free_rate=hurdle,
+                    price_source=source)
     if start is not None and end is not None:
         project_controls(edited, alternate, settings)
     scenario_trades = None
@@ -233,6 +244,8 @@ def main():
     error = None
     try:
         trades = parse_log(edited)
+        if source == "Adjusted-close CSV" and uploaded_prices is None:
+            raise PortfolioError("Attach a price history CSV for this analysis.")
         currencies = currency_settings(account_ccy, report_ccy, overrides)
         if not bench or "," in bench or any(c.isspace() for c in bench):
             raise PortfolioError("Enter one benchmark ticker.")
@@ -244,13 +257,16 @@ def main():
         error = str(exc)
         st.warning(error)
     variant_signature = None if alternate is None else (export_log(alternate), tuple(sorted(skipped_rows(alternate))))
-    signature = (3, export_log(edited), variant_signature, *settings.values())
+    price_bytes = uploaded_prices.getvalue() if uploaded_prices is not None else None
+    price_digest = sha256(price_bytes).digest() if price_bytes is not None else None
+    signature = (4, export_log(edited), variant_signature, price_digest, *settings.values())
     if st.button("Run analysis", key="run", type="primary", disabled=error is not None):
         st.session_state.pop("analysis", None)
         try:
             with st.spinner("Loading adjusted prices and replaying transactions…"):
+                snapshot = read_price_history(price_bytes) if price_bytes is not None else None
                 results = analyze_scenarios(trades, scenario_trades, bench, start, end, rate, initial_cash, currencies,
-                                            cached_download=get_prices, clear_cache=get_prices.clear)
+                                            cached_download=get_prices, clear_cache=get_prices.clear, price_history=snapshot)
             original, variant, replay_error = results
             st.session_state.analysis = (signature, (original, variant, scenario_error or replay_error))
         except PortfolioError as exc:
@@ -259,7 +275,7 @@ def main():
     if previous is not None:
         previous_signature, results = previous
         if previous_signature == signature:
-            show_results(*results, bench, rate, hurdle / 100, markers, shade, compare, logarithmic, edited)
+            show_results(*results, bench, rate, hurdle / 100, markers, shade, compare, logarithmic, edited, source)
         else:
             st.info("Inputs changed. Run analysis to update your results.")
 
