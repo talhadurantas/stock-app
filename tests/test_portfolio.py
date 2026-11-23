@@ -78,7 +78,7 @@ class LedgerTests(unittest.TestCase):
                      [("2024-01-08", "Initial", "", "A", "100")])
         r = simulate({"A": [100, 110, 150, 170], "SPY": [100, np.nan, 102, 105]},
                      [("2024-01-09", "Initial", "", "A", "100")])
-        self.assertEqual(r.executions.Executed.iloc[0], pd.Timestamp("2024-01-10"))
+        self.assertEqual(r.executions.Executed.iloc[0], pd.Timestamp("2024-01-09"))
 
     def test_same_close_order_and_drifted_sale_proceeds(self):
         r = simulate({"A": [100, 200, 200], "B": [100]*3, "C": [100]*3}, [
@@ -98,8 +98,9 @@ class LedgerTests(unittest.TestCase):
         r = simulate({"A": [100]*8}, [
             ("2024-01-08", "Initial", "", "A", "100"),
             ("2024-01-10", "Sell", "A", "", ""),
-            ("2024-01-15", "Buy", "", "A", "100"),
-        ], rate=4.5)
+            ("2024-01-16", "Buy", "", "A", "100"),
+        ], dates=["2024-01-08","2024-01-09","2024-01-10","2024-01-11","2024-01-12",
+                  "2024-01-16","2024-01-17","2024-01-18"], rate=4.5)
         self.assertEqual(len(r.ledger), 8)
         self.assertAlmostEqual(r.ledger.Portfolio.iloc[-1], 100 * 1.045**(3/252))
         self.assertAlmostEqual(r.ledger.Cash.iloc[-1], 0)

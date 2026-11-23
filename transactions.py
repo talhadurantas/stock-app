@@ -151,6 +151,23 @@ def parse_log(frame: pd.DataFrame, *, skip_rows=(), allow_empty=False) -> list[T
     return trades
 
 
+def csv_rows(data, columns):
+    try:
+        reader = csv.reader(StringIO(data.decode("utf-8-sig"), newline=""), strict=True)
+        header = [s.strip().casefold() for s in next(reader, [])]
+        if len(set(header)) != len(header) or any(c.casefold() not in header for c in columns):
+            raise PortfolioError("Expected CSV columns: " + ", ".join(columns))
+        slots = [header.index(c.casefold()) for c in columns]
+        for fields in reader:
+            if not any(f.strip() for f in fields):
+                continue
+            if len(fields) != len(header):
+                raise PortfolioError(f"CSV line {reader.line_num} has the wrong number of fields.")
+            yield reader.line_num, dict(zip(columns, (fields[i].strip() for i in slots)))
+    except (UnicodeError, csv.Error) as exc:
+        raise PortfolioError("Choose a valid UTF-8 CSV file.") from exc
+
+
 def import_log(data: bytes) -> pd.DataFrame:
     try:
         reader = csv.reader(StringIO(data.decode("utf-8-sig"), newline=""), strict=True)

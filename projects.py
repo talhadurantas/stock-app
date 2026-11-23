@@ -36,6 +36,10 @@ def _records(frame, scenario):
 
 def save_project(original, scenario, settings):
     cfg = {key: settings[key] for key in SETTING_KEYS}
+    if "price_source" in settings:
+        cfg["price_source"] = settings["price_source"]
+    if "risk_free_rate" in settings:
+        cfg["risk_free_rate"] = settings["risk_free_rate"]
     cfg["start_date"] = cfg["start_date"].isoformat()
     cfg["end_date"] = cfg["end_date"].isoformat()
     payload = {"format": FORMAT, "version": 1, "settings": cfg, "original": _records(original, False),
@@ -63,6 +67,15 @@ def read_project(data):
         if not isinstance(saved, dict) or saved.get("format") != FORMAT or saved.get("version") != 1:
             raise PortfolioError("Choose a Portfolio Visualizer comparison file (version 1).")
         settings = {key: saved["settings"][key] for key in SETTING_KEYS}
+        if "price_source" in saved["settings"]:
+            if saved["settings"]["price_source"] not in ("Yahoo Finance", "Adjusted-close CSV"):
+                raise PortfolioError("Unknown saved price history source.")
+            settings["price_source"] = saved["settings"]["price_source"]
+        if "risk_free_rate" in saved["settings"]:
+            rate = saved["settings"]["risk_free_rate"]
+            if type(rate) not in (float, int) or not isfinite(rate) or rate < -99.99:
+                raise PortfolioError("Invalid annual reporting-currency risk-free rate.")
+            settings["risk_free_rate"] = float(rate)
         for key in ("start_date", "end_date"):
             settings[key] = date.fromisoformat(settings[key])
         if not date(1900, 1, 1) <= settings["start_date"] <= settings["end_date"] <= date.today():
