@@ -7,8 +7,11 @@ import streamlit as st
 from matplotlib.figure import Figure
 from matplotlib.ticker import PercentFormatter
 
-from analytics import PERCENT_METRICS, RISK_FREE_RATE, drawdown, monthly_returns, rolling_metrics, stats
-from market_data import analyze_portfolio, load_prices
+from analytics import PERCENT_METRICS, RISK_FREE_RATE, daily_returns, drawdown, holding_breakdown, monthly_returns, rolling_metrics, stats
+from charts import growth_chart
+from currencies import NATIVE, SUPPORTED, currency_settings
+from market_data import analyze_scenarios, load_prices
+from projects import SKIP, duplicate_log, read_project, save_project, skipped_rows
 from portfolio import (
     ACTIONS, BUY_AND_HOLD, COLUMNS, LOG_COLUMNS, SELL_PERCENT, PortfolioError,
     export_log, import_log, parse_log, symbol,
@@ -46,6 +49,25 @@ def replace_draft(frame, message):
     st.rerun()
 
 
+def edit_log(frame, key, scenario=False):
+    order = ["Date", "Action", "Sell", SELL_PERCENT, "Buy", "Weights", "Amount", "Fee"]
+    return st.data_editor(
+        frame, key=key, num_rows="dynamic", hide_index=True, width="stretch",
+        column_order=[SKIP, *order] if scenario else order,
+        column_config={
+            SKIP: st.column_config.CheckboxColumn("Skip", default=False),
+            "Date": st.column_config.TextColumn("Date", help="YYYY-MM-DD or YYYYMMDD"),
+            "Action": st.column_config.SelectboxColumn("Action", options=ACTIONS),
+            "Sell": st.column_config.TextColumn("Sell tickers"),
+            SELL_PERCENT: st.column_config.TextColumn("Sell % of position", help="Blank sells the whole position."),
+            "Buy": st.column_config.TextColumn("Buy tickers"),
+            "Weights": st.column_config.TextColumn("Buy weights %"),
+            "Amount": st.column_config.TextColumn("Amount", help="Deposit, withdrawal or standalone fee in account currency."),
+            "Fee": st.column_config.TextColumn("Fee", help="Flat fee for this row, in account currency."),
+        },
+    )
+
+
 def editor():
     state = st.session_state
     if "editor_seed" not in state:
@@ -61,22 +83,11 @@ def editor():
             "**Sell** and **Sell & Buy** use the Sell % of each named position. "
             "Enter 25 to sell one quarter, or leave the field blank to sell in full. "
             "**Sell & Buy** applies the buy weights to those sale proceeds. "
-            "List percentages in ticker order. Blank buy weights split the available budget equally."
+            "List percentages in ticker order. Blank buy weights split the available budget equally. "
+            "**Deposit**, **Withdrawal** and **Fee** take a positive Amount in account currency. "
+            "An optional flat Fee on a trade is reserved before purchases. Withdrawals use available cash."
         )
-    edited = st.data_editor(
-        state.editor_seed.reindex(columns=LOG_COLUMNS, fill_value=""),
-        key=f"log_{state.editor_version}", num_rows="dynamic", hide_index=True, width="stretch",
-        column_order=["Date", "Action", "Sell", SELL_PERCENT, "Buy", "Weights"],
-        column_config={
-            "Date": st.column_config.TextColumn("Date", help="YYYY-MM-DD or YYYYMMDD"),
-            "Action": st.column_config.SelectboxColumn("Action", options=ACTIONS),
-            "Sell": st.column_config.TextColumn("Sell tickers"),
-            SELL_PERCENT: st.column_config.TextColumn("Sell % of position",
-                help="One percentage per sell ticker. For example, 25 sells one quarter. Blank sells 100%."),
-            "Buy": st.column_config.TextColumn("Buy tickers"),
-            "Weights": st.column_config.TextColumn("Buy weights %", help="In the same order as the buy tickers"),
-        },
-    )
+    edited = edit_log(state.editor_seed.reindex(columns=LOG_COLUMNS, fill_value=""), f"log_{state.editor_version}")
     add, clear, tech, value = st.columns(4)
     if add.button("Add row", width="stretch"):
         row = table([(date.today().isoformat(), "Buy", "", "", "")])
@@ -102,31 +113,59 @@ def editor():
     return edited
 
 
-def growth_chart(result, benchmark, markers, shade):
-    ledger = result.ledger
-    fig = Figure(figsize=(10, 4.2), layout="constrained")
-    ax = fig.subplots()
-    marker = "o" if len(ledger) == 1 else None
-    ax.plot(ledger.index, ledger["Portfolio"], label="Portfolio", color=BLUE, linewidth=2.4, marker=marker)
-    ax.plot(ledger.index, ledger[BUY_AND_HOLD], label=BUY_AND_HOLD, color="#7451a4", linestyle="-.",
-            linewidth=1.9, marker=marker)
-    ax.plot(ledger.index, ledger["Benchmark"], label=benchmark, color=ORANGE, linestyle="--",
-            linewidth=1.6, marker=marker)
-    if shade:
-        declines, peak, trough = drawdown(ledger["Portfolio"])
-        if declines.min() < 0:
-            ax.axvspan(peak, trough, color="#bf6870", alpha=0.18, label="Portfolio max drawdown")
-    if markers and not result.executions.empty:
-        for day, group in result.executions.groupby("Executed", sort=False):
-            ax.axvline(day, color="#66757b", linewidth=0.8, linestyle=":", alpha=0.65)
-            if len(result.executions) <= 10:
-                ax.annotate(" / ".join(group["Action"]), xy=(day, 0.97),
-                            xycoords=("data", "axes fraction"), xytext=(3, 0),
-                            textcoords="offset points", rotation=90, va="top", fontsize=8)
-    ax.set_ylabel("Value per 100 invested")
-    ax.grid(axis="y", alpha=0.2)
-    ax.legend(loc="best", frameon=False)
-    st.pyplot(fig)
+def scenario_editor(original):
+    state = st.session_state
+    enabled = st.toggle("Compare a what-if scenario", key="compare_scenario")
+    if not enabled:
+        if state.pop("scenario_was_open", False) and "scenario_draft" in state:
+            state.scenario_seed = state.scenario_draft.copy()
+            state.scenario_version += 1
+        return None
+    if "scenario_seed" not in state:
+        state.scenario_seed = duplicate_log(original)
+        state.scenario_version = 0
+    state.scenario_was_open = True
+    st.subheader("What-if scenario")
+    st.caption("Skip a row or change its details. Both logs use the original funding date, prices and settings.")
+    if st.button("Copy current original into scenario", key="duplicate"):
+        state.scenario_seed = duplicate_log(original)
+        state.scenario_version += 1
+    draft = edit_log(state.scenario_seed, f"variant_{state.scenario_version}", scenario=True)
+    state.scenario_draft = draft.copy()
+    return draft
+
+
+def restore_project():
+    state = st.session_state
+    try:
+        original, alternate, settings = read_project(state.project_file.getvalue())
+    except PortfolioError as exc:
+        state.project_error = str(exc)
+        return
+    if settings["report_currency"] == NATIVE:
+        settings["report_currency"] = "USD"
+    state.update(settings)
+    state.editor_seed = original
+    state.editor_version = state.get("editor_version", 0) + 1
+    state.compare_scenario = alternate is not None
+    state.scenario_seed = alternate if alternate is not None else duplicate_log(original)
+    state.scenario_draft = state.scenario_seed.copy()
+    state.scenario_version = state.get("scenario_version", 0) + 1
+    state.scenario_was_open = alternate is not None
+    state.pop("analysis", None)
+    state.pop("project_error", None)
+    state.editor_message = "Opened the saved comparison. Run analysis to replay it."
+
+
+def project_controls(original, alternate, settings):
+    with st.expander("Save or open a comparison"):
+        uploaded = st.file_uploader("Saved comparison JSON", type=["json"], key="project_file")
+        st.button("Open saved comparison", disabled=uploaded is None, on_click=restore_project, key="open_project")
+        if "project_error" in st.session_state:
+            st.error(st.session_state.project_error)
+        if alternate is not None:
+            st.download_button("Save both logs and settings", save_project(original, alternate, settings),
+                               "portfolio_comparison.json", "application/json", key="save_project", on_click="ignore")
 
 
 def formatted(name, value):
@@ -151,12 +190,12 @@ def show_no_orders(rows):
 
 def risk_charts(result, bench, compare_rolling):
     portfolio = result.ledger["Portfolio"]
-    returns = portfolio.pct_change(fill_method=None).dropna()
+    returns = daily_returns(portfolio, 100).dropna()
     if returns.empty:
         st.info("A second closing valuation is needed for return distributions.")
         return
     with st.expander("Monthly returns"):
-        months = monthly_returns(portfolio)
+        months = monthly_returns(portfolio, 100)
         grid = months.to_frame("Return").assign(Year=months.index.year, Month=months.index.month)
         pivot = grid.pivot(index="Year", columns="Month", values="Return").reindex(columns=range(1, 13))
         fig = Figure(figsize=(10, max(2, 0.40 * len(pivot) + 1.2)), layout="constrained")
@@ -212,11 +251,15 @@ def risk_charts(result, bench, compare_rolling):
         st.caption("The 5% and 1% return quantiles and the corresponding average tail returns appear in Detailed statistics.")
 
 
-def show_results(result, bench, cash_rate, markers, shade, compare_rolling, draft):
+def show_results(result, alternative, scenario_error, bench, cash_rate, markers, shade, compare_rolling, logarithmic, draft):
     ledger = result.ledger
     first, last = ledger.index[0].date(), ledger.index[-1].date()
-    strategies = ("Portfolio", BUY_AND_HOLD, "Benchmark")
-    summary = pd.DataFrame({name: stats(ledger[name]) for name in strategies})
+    if alternative is not None:
+        ledger = ledger.assign(Scenario=alternative.ledger["Portfolio"])
+    strategies = ["Portfolio", BUY_AND_HOLD, "Benchmark"]
+    if alternative is not None:
+        strategies.insert(1, "Scenario")
+    summary = pd.DataFrame({name: stats(ledger[name], opening=100) for name in strategies})
     summary.loc["Ending value per 100"] = ledger.iloc[-1].reindex(strategies)
     pretty = pd.DataFrame({name: [formatted(metric, v) for metric, v in col.items()]
                            for name, col in summary.items()}, index=summary.index)
@@ -232,12 +275,40 @@ def show_results(result, bench, cash_rate, markers, shade, compare_rolling, draf
     top[2].metric("Return difference", f"{spread*100:+.2f} pp")
     top[3].metric("Portfolio max drawdown", formatted("Max drawdown", port["Max drawdown"]))
     show_no_orders(result.no_orders)
+    if scenario_error:
+        st.error("What-if scenario: " + scenario_error)
     st.subheader("Strategy comparison")
     st.caption("Buy and hold keeps the positions from your first transaction. Any cash left earns the same "
-               "interest rate. All three start at 100 on the first close in the selected window.")
+               "interest rate. Performance tracks an opening investment of 100 and adjusts for deposits and withdrawals.")
     comparison = pretty.loc[["Ending value per 100", "Max drawdown"]].T.rename_axis("Strategy")
     st.dataframe(comparison.reset_index(), hide_index=True)
-    growth_chart(result, bench, markers, shade)
+    if alternative is not None:
+        gap = summary.at["Ending value per 100", "Scenario"] - summary.at["Ending value per 100", "Portfolio"]
+        dd = 100 * (summary.at["Max drawdown", "Scenario"] - summary.at["Max drawdown", "Portfolio"])
+        st.write(f"Scenario minus original: **{gap:+,.2f}** per 100 in ending value and **{dd:+.2f} pp** in maximum drawdown.")
+    st.altair_chart(growth_chart(result, alternative, markers=markers, shade=shade, logarithmic=logarithmic),
+                    width="stretch", theme=None)
+    st.caption(f"Drag or scroll to zoom the time axis. Hover over a trade marker for orders and cash in {result.currency}.")
+    run_views = {"Portfolio": result}
+    if alternative is not None:
+        run_views["Scenario"] = alternative
+    st.subheader("Account value and investment gain")
+    account_rows = []
+    for label, view in run_views.items():
+        last_account = view.account.iloc[-1]
+        account_rows.append({"Strategy": label, "Balance": last_account["Balance"],
+                             "Net contributed": last_account["Net contributed"], "Investment gain": last_account["Investment gain"],
+                             "Cash": last_account["Cash"], "Fees in window": view.account["Fees"].sum()})
+    st.dataframe(pd.DataFrame(account_rows).round(2), hide_index=True)
+    st.caption(f"Amounts in {result.currency}. Net contributed includes starting cash and flows since funding, each valued on its own date.")
+    with st.expander("Return by holding and worst drawdown", expanded=True):
+        for label, view in run_views.items():
+            detail = holding_breakdown(view).sort_values("Total return (pp)", ascending=False)
+            detail.loc["Total"] = detail.sum()
+            if alternative is not None:
+                st.markdown(f"**{label}**")
+            st.dataframe(detail.round(3))
+        st.caption("Each column adds up to the strategy's return or maximum drawdown in percentage points. Cash includes interest and currency changes.")
     if result.pending:
         st.info("Rows outside the available closing dates: " + ", ".join(map(str, result.pending)) + ".")
     for title, carried in (("Portfolio", result.carried), (BUY_AND_HOLD, result.hold_carried)):
@@ -250,6 +321,7 @@ def show_results(result, bench, cash_rate, markers, shade, compare_rolling, draf
         holdings.append(("Cash", ledger["Cash"].iloc[-1]))
         allocation = pd.DataFrame(holdings, columns=["Position", "Closing value"])
         allocation["Weight %"] = allocation["Closing value"] / ledger["Portfolio"].iloc[-1] * 100
+        allocation["Closing value"] *= result.account["Balance"].iloc[-1] / ledger["Portfolio"].iloc[-1]
         st.markdown(f"**Closing positions on {last:%d %b %Y}**")
         st.dataframe(allocation.round(3), hide_index=True)
         st.markdown("**Executed transactions in the selected window**")
@@ -260,32 +332,51 @@ def show_results(result, bench, cash_rate, markers, shade, compare_rolling, draf
             events["Requested"] = events["Requested"].dt.date
             events["Executed"] = events["Executed"].dt.date
             st.dataframe(events.round(3), hide_index=True)
-        cash_weight = ledger["Cash"] / ledger["Portfolio"]
+        if alternative is not None:
+            st.markdown("**Scenario transactions**")
+            if not alternative.executions.empty:
+                st.dataframe(alternative.executions.round(3), hide_index=True)
+            if not alternative.no_orders.empty:
+                show_no_orders(alternative.no_orders)
+            if alternative.pending:
+                st.info("Pending scenario rows: " + ", ".join(map(str, alternative.pending)))
+            if alternative.carried:
+                st.caption(f"Scenario positions using previous closes (sessions): {alternative.carried}")
+        cash_weight = result.account["Cash"].div(result.account["Balance"].replace(0, np.nan))
         st.caption(f"Average session-end allocation: {1-cash_weight.mean():.1%} invested and {cash_weight.mean():.1%} cash.")
     with st.expander("Detailed statistics"):
         st.dataframe(pretty)
         for name in strategies:
             title = bench if name == "Benchmark" else name
             values = ledger[name]
-            declines, peak, trough = drawdown(values)
+            declines, peak, trough = drawdown(values, opening=100)
             if declines.min() < 0:
                 st.caption(f"{title} drawdown peak {peak.date()} · trough {trough.date()} · {(trough - peak).days} calendar days")
-            changes = values.pct_change(fill_method=None).dropna()
+            changes = daily_returns(values, 100).dropna()
             if not changes.empty:
                 st.caption(f"{title} best day {changes.idxmax().date()} · worst day {changes.idxmin().date()}")
         st.caption(f"Risk metrics use 252 sessions per year and a {RISK_FREE_RATE:.0%} annual risk-free assumption. A dash indicates an undefined metric.")
     risk_charts(result, bench, compare_rolling)
     with st.expander("Download results"):
         out = ledger[list(PERFORMANCE_NAMES)].rename(columns=PERFORMANCE_NAMES).copy()
-        out["Portfolio Daily Return"] = ledger["Portfolio"].pct_change(fill_method=None)
+        out["Portfolio Daily Return"] = daily_returns(ledger["Portfolio"], 100)
         out["Benchmark Daily Return"] = ledger["Benchmark"].pct_change(fill_method=None)
         out = out.join(result.positions.add_prefix("Position value: "))
         out["Buy and Hold Value"] = ledger[BUY_AND_HOLD]
-        out["Buy and Hold Daily Return"] = ledger[BUY_AND_HOLD].pct_change(fill_method=None)
+        out["Buy and Hold Daily Return"] = daily_returns(ledger[BUY_AND_HOLD], 100)
+        out = out.join(result.account.add_prefix("Account: ")).join(result.contributions.add_prefix("Return points: "))
+        if alternative is not None:
+            out["Scenario Value"] = ledger["Scenario"]
+            out = out.join(alternative.account.add_prefix("Scenario account: "))
+            out = out.join(alternative.contributions.add_prefix("Scenario return points: "))
         report = "\n".join([
             "PORTFOLIO VISUALIZER", f"{first} to {last}", f"Benchmark: {bench}",
             f"Cash rate: {cash_rate:.2f}% per year, compounded each benchmark session.",
-            "Values are per 100 invested at the first reported close.",
+            f"Account amounts in {result.currency}. Performance per 100 is adjusted for external cash flows.",
+            pd.DataFrame(account_rows).to_string(index=False),
+            *(label + " holding contributions (pp)\n" + holding_breakdown(view).to_string() for label, view in run_views.items()),
+            *(["Scenario execution history\n" + alternative.executions.to_string(index=False)] if alternative is not None else []),
+            *(["Scenario error: " + scenario_error] if scenario_error else []),
             "Buy and hold keeps the positions and cash left by the first transaction.",
             f"Portfolio minus benchmark: {spread * 100:+.2f} percentage points.",
             f"Average cash allocation: {cash_weight.mean():.2%}", "", pretty.to_string(),
@@ -318,20 +409,45 @@ def main():
         bench = symbol(st.text_input("Benchmark ticker", "SPY", key="benchmark"))
         rate = st.number_input("Annual cash interest (%)", min_value=0.0, max_value=100.0,
                                value=4.5, step=0.25, key="cash_rate")
+        initial_cash = st.number_input("Starting cash", min_value=0.0, value=100.0, step=100.0, key="starting_cash")
+        account_ccy = st.selectbox("Account currency", [*SUPPORTED, NATIVE], key="account_currency",
+                                   help="Currency of cash, deposits, withdrawals and fees. As quoted replays a single-currency log.")
+        report_ccy = st.selectbox("Report in", SUPPORTED, disabled=account_ccy == NATIVE, key="report_currency")
+        with st.expander("Ticker currencies"):
+            st.caption("Istanbul (.IS) listings use TRY. US symbols use USD. Declare other USD or TRY listings below.")
+            overrides = st.text_input("Quote currency overrides", key="currency_overrides", placeholder="XYZ=TRY, ABC=USD")
         st.subheader("Chart settings")
         markers = st.checkbox("Mark trades", True)
         shade = st.checkbox("Highlight portfolio max drawdown", False)
         compare = st.checkbox("Show benchmark on rolling charts", True)
+        logarithmic = st.checkbox("Logarithmic growth chart", False, key="log_chart")
         with st.expander("Valuation assumptions"):
             st.write("Trades execute at the next benchmark close on or after the date entered. "
                      "Earlier holdings earn the move into that close. Same-date trades follow log order. "
                      "Prices include split and dividend adjustments. Cash compounds once per benchmark session, "
-                     "using 252 sessions per year. Use assets and a benchmark in one currency. "
-                     "The model uses fractional positions and assumes zero fees and taxes.")
+                     "using 252 sessions per year. Prices and the benchmark use the last available USD/TRY close "
+                     "on or before each valuation date when conversion is needed. Trades use fractional positions. "
+                     "Fees are charged as entered. Deposits and withdrawals change the account balance at the execution close.")
     edited = editor()
+    alternate = scenario_editor(edited)
+    settings = dict(start_date=start, end_date=end, benchmark=bench, cash_rate=rate, starting_cash=initial_cash,
+                    account_currency=account_ccy, report_currency=report_ccy, currency_overrides=overrides)
+    if start is not None and end is not None:
+        project_controls(edited, alternate, settings)
+    scenario_trades = None
+    scenario_error = None
+    if alternate is not None:
+        try:
+            scenario_trades = parse_log(alternate, skip_rows=skipped_rows(alternate), allow_empty=True)
+        except PortfolioError as exc:
+            scenario_error = str(exc)
+            st.warning("What-if scenario: " + scenario_error)
     error = None
     try:
         trades = parse_log(edited)
+        currencies = currency_settings(account_ccy, report_ccy, overrides)
+        if initial_cash <= 0:
+            raise PortfolioError("Starting cash must be positive.")
         if not bench or "," in bench or any(c.isspace() for c in bench):
             raise PortfolioError("Enter one benchmark ticker.")
         if start is None or end is None or start > end:
@@ -341,21 +457,23 @@ def main():
     except PortfolioError as exc:
         error = str(exc)
         st.warning(error)
-    signature = (2, export_log(edited), start, end, bench, rate)
+    variant_signature = None if alternate is None else (export_log(alternate), tuple(sorted(skipped_rows(alternate))))
+    signature = (3, export_log(edited), variant_signature, *settings.values())
     if st.button("Run analysis", key="run", type="primary", disabled=error is not None):
         st.session_state.pop("analysis", None)
         try:
             with st.spinner("Loading adjusted prices and replaying transactions…"):
-                result = analyze_portfolio(trades, bench, start, end, rate,
-                                           cached_download=get_prices, clear_cache=get_prices.clear)
-            st.session_state.analysis = (signature, result)
+                results = analyze_scenarios(trades, scenario_trades, bench, start, end, rate, initial_cash, currencies,
+                                            cached_download=get_prices, clear_cache=get_prices.clear)
+            original, variant, replay_error = results
+            st.session_state.analysis = (signature, (original, variant, scenario_error or replay_error))
         except PortfolioError as exc:
             st.error(str(exc))
     previous = st.session_state.get("analysis")
     if previous is not None:
-        previous_signature, result = previous
+        previous_signature, results = previous
         if previous_signature == signature:
-            show_results(result, bench, rate, markers, shade, compare, edited)
+            show_results(*results, bench, rate, markers, shade, compare, logarithmic, edited)
         else:
             st.info("Inputs changed. Run analysis to update your results.")
 

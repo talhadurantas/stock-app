@@ -14,21 +14,32 @@ PERCENT_METRICS = {
 }
 
 
-def drawdown(values):
-    declines = values / values.cummax() - 1
+def drawdown(values, opening=None):
+    peaks = values.cummax()
+    if opening is not None:
+        peaks = peaks.clip(lower=opening)
+    declines = values / peaks - 1
     trough = declines.idxmin()
-    peak = values.loc[:trough].idxmax()
+    prefix = values.loc[:trough]
+    peak = values.index[0] if opening is not None and opening > prefix.max() else prefix.idxmax()
     return declines, peak, trough
 
 
-def stats(values):
-    returns = values.pct_change(fill_method=None).dropna()
-    total = values.iloc[-1] / values.iloc[0] - 1
+def daily_returns(values, opening=None):
+    changes = values.pct_change(fill_method=None)
+    if opening is not None and not np.isclose(values.iloc[0], opening, rtol=1e-12, atol=0):
+        changes.iloc[0] = values.iloc[0] / opening - 1
+    return changes
+
+
+def stats(values, opening=None):
+    returns = daily_returns(values, opening).dropna()
+    total = values.iloc[-1] / (values.iloc[0] if opening is None else opening) - 1
     days = (values.index[-1] - values.index[0]).days
     with np.errstate(over="ignore"):
         cagr = np.expm1(np.log1p(total) * 365.25 / days) if days else np.nan
     cagr = cagr if np.isfinite(cagr) else np.nan
-    declines, _, _ = drawdown(values)
+    declines, _, _ = drawdown(values, opening)
     max_dd = declines.min()
     rf_daily = (1 + RISK_FREE_RATE) ** (1 / SESSIONS_PER_YEAR) - 1
     excess = returns - rf_daily
@@ -48,8 +59,8 @@ def stats(values):
     })
 
 
-def monthly_returns(values):
-    daily = values.pct_change(fill_method=None)
+def monthly_returns(values, opening=None):
+    daily = daily_returns(values, opening)
     # The partial opening and closing months include only observed close-to-close returns.
     return (1 + daily).resample("ME").prod(min_count=1).dropna() - 1
 
@@ -64,3 +75,17 @@ def rolling_metrics(values):
         "Return": values.pct_change(n, fill_method=None),
         "Volatility": vol, "Sharpe": sharpe,
     })
+
+
+def holding_breakdown(result):
+    values = result.ledger["Portfolio"]
+    declines, peak, trough = drawdown(values, opening=100.0)
+    points = result.contributions
+    peak_value = max(100.0, values.loc[:trough].max())
+    from_open = peak_value == 100 and values.loc[:trough].max() < 100
+    period = points.loc[:trough] if from_open else points.loc[(points.index > peak) & (points.index <= trough)]
+    losses = period.sum() * 100 / peak_value
+    if declines.min() >= 0:
+        losses[:] = 0.0
+    return pd.DataFrame({"Total return (pp)": points.sum(),
+                         "Worst drawdown (pp)": losses}).rename_axis("Holding")
