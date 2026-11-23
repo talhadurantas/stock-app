@@ -1,5 +1,6 @@
 """Exercise the deployed public app after a merge, using only example transactions."""
 
+import os
 import re
 import time
 from datetime import date
@@ -10,7 +11,7 @@ from merhaba import EXAMPLES, table
 from projects import duplicate_log, save_project
 
 
-APP_URL = "https://stock-app-drkienpnjsbecpxcxo3ina.streamlit.app/"
+APP_URL = os.environ.get("PORTFOLIO_APP_URL", "https://stock-app-drkienpnjsbecpxcxo3ina.streamlit.app/")
 
 
 def live_frame(page):
