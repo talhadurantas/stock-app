@@ -71,7 +71,7 @@ def replay(frame, original, skip, start, end, initial, rate, *, name, report="US
 
 def main():
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch()
+        browser = playwright.chromium.launch(channel="chrome")
         page = browser.new_page(viewport={"width": 1440, "height": 1050})
         frame = live_frame(page)
         cash = table([("2024-03-04", "Initial", "", "", ""),
