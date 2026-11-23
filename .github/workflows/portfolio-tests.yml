@@ -52,3 +52,6 @@ jobs:
           PYTHONPATH: .
           MPLBACKEND: Agg
           PORTFOLIO_APP_URL: ${{ github.event.action != 'closed' && 'http://localhost:8501' || 'https://stock-app-drkienpnjsbecpxcxo3ina.streamlit.app/' }}
+      - name: Show fixture server output on failure
+        if: failure() && github.event.action != 'closed'
+        run: tail -n 80 "$RUNNER_TEMP/portfolio-streamlit.log"

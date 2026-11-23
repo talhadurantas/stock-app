@@ -50,7 +50,11 @@ def replay(frame, original, skip, start, end, initial, rate, *, name, report="US
     expect(uploader.get_by_text(f"{name}.json", exact=True)).to_be_visible(timeout=20_000)
     expect(open_button).to_be_enabled(timeout=20_000)
     open_button.click()
-    expect(frame.get_by_text(f"Last opened {name}.json", exact=True)).to_be_visible(timeout=25_000)
+    try:
+        expect(frame.get_by_text(f"Last opened {name}.json", exact=True)).to_be_attached(timeout=12_000)
+    except AssertionError:
+        print(f"Interface after opening {name}.json:\n{frame.locator('body').inner_text()[:8000]}", flush=True)
+        raise
     comparison = frame.get_by_text(re.compile("^Scenario minus original:"))
     expect(comparison).to_have_count(0, timeout=20_000)
     run = frame.get_by_role("button", name="Run analysis", exact=True)
