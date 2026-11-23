@@ -446,8 +446,6 @@ def main():
     try:
         trades = parse_log(edited)
         currencies = currency_settings(account_ccy, report_ccy, overrides)
-        if initial_cash <= 0:
-            raise PortfolioError("Starting cash must be positive.")
         if not bench or "," in bench or any(c.isspace() for c in bench):
             raise PortfolioError("Enter one benchmark ticker.")
         if start is None or end is None or start > end:

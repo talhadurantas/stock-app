@@ -106,8 +106,8 @@ def backtest(prices: pd.DataFrame, trades: list[Trade], benchmark: str, start, e
     bench = symbol(benchmark)
     if start > end or not isfinite(cash_rate) or cash_rate < 0:
         raise PortfolioError("Check the date range and annual cash interest percentage.")
-    if not isfinite(initial_cash) or initial_cash <= 0:
-        raise PortfolioError("Starting cash must be positive and finite.")
+    if not isfinite(initial_cash) or initial_cash < 0:
+        raise PortfolioError("Starting cash must be finite and nonnegative.")
     if funding_date is None and not trades:
         raise PortfolioError("The log has no transaction on or before the end date.")
     first_order = pd.Timestamp(funding_date if funding_date is not None else trades[0].date)
@@ -121,7 +121,10 @@ def backtest(prices: pd.DataFrame, trades: list[Trade], benchmark: str, start, e
     prices.index = pd.DatetimeIndex(prices.index).tz_localize(None).normalize()
     if prices.index.has_duplicates or prices.columns.has_duplicates:
         raise QuoteError("Price data contains duplicate dates or tickers.")
-    prices = prices.sort_index().apply(pd.to_numeric, errors="coerce").astype(float)
+    used = set(quoted_symbols(trades, bench, end))
+    if currencies.needs_fx(used):
+        used.add(FX_TICKER)
+    prices = prices.loc[:, prices.columns.isin(used)].sort_index().apply(pd.to_numeric, errors="coerce").astype(float)
     prices = prices.loc[:end]
     invalid = prices.notna() & ((prices <= 0) | ~np.isfinite(prices))
     if invalid.any().any():
@@ -145,7 +148,7 @@ def backtest(prices: pd.DataFrame, trades: list[Trade], benchmark: str, start, e
         else:
             scheduled.setdefault(calendar[idx], []).append(trade)
     tickers = sorted({t for group in scheduled.values() for trade in group for t in (*trade.sells, *trade.buys)})
-    raw, marks, report_fx, benchmark_prices = valuation_prices(prices, tickers, bench, calendar, currencies)
+    raw, marks, report_fx, benchmark_prices, exchange_rates = valuation_prices(prices, tickers, bench, calendar, currencies)
     raw_rows = raw.itertuples(index=False, name=None) if tickers else (() for _ in calendar)
     mark_rows = marks.itertuples(index=False, name=None) if tickers else (() for _ in calendar)
     cash, units = float(initial_cash), {}
@@ -180,7 +183,12 @@ def backtest(prices: pd.DataFrame, trades: list[Trade], benchmark: str, start, e
             before = (cash + fsum(values.values())) * fx
             if shares:
                 unit_price = before / shares
-            cash, event = execute(trade, day, cash, units, values, quotes)
+            try:
+                cash, event = execute(trade, day, cash, units, values, quotes)
+            except MissingQuotes as exc:
+                if pd.isna(exchange_rates.iloc[i]) and any(currencies.quote(t) != currencies.account for t in exc.tickers):
+                    raise MissingQuotes((FX_TICKER,), f"Row {trade.row}: no USD/TRY rate on or before {day.date()}.") from exc
+                raise
             flow, fee = event["External flow"] * fx, event["Fee"] * fx
             if flow:
                 # Recomputing the remaining shares also handles a full withdrawal exactly.

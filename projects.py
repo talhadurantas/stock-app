@@ -70,7 +70,7 @@ def read_project(data):
         for key in ("starting_cash", "cash_rate"):
             if type(settings[key]) not in (float, int) or not isfinite(settings[key]):
                 raise PortfolioError("The saved cash settings must be finite numbers.")
-        if settings["starting_cash"] <= 0 or not 0 <= settings["cash_rate"] <= 100:
+        if settings["starting_cash"] < 0 or not 0 <= settings["cash_rate"] <= 100:
             raise PortfolioError("Check the starting balance and interest rate in the saved settings.")
         if not all(isinstance(settings[k], str) for k in ("benchmark", "account_currency", "report_currency", "currency_overrides")):
             raise PortfolioError("Invalid benchmark or currency settings in the saved comparison.")
