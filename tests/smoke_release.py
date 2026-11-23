@@ -21,7 +21,7 @@ def live_frame(page):
     woke = False
     while time.monotonic() < deadline:
         for frame in page.frames:
-            if frame.get_by_text("Save and reopen comparisons", exact=True).count():
+            if frame.get_by_role("button", name="Try the offline statement demo").count():
                 return frame
             wake = frame.get_by_role("button", name="Yes, get this app back up!")
             if not woke and wake.count() and wake.is_visible():
@@ -75,9 +75,14 @@ def replay(frame, original, skip, start, end, initial, rate, *, name, report="US
 
 def main():
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(channel="chrome")
+        browser = playwright.chromium.launch(channel="chrome", executable_path=os.getenv("PORTFOLIO_BROWSER_EXECUTABLE"))
         page = browser.new_page(viewport={"width": 1440, "height": 1050})
         frame = live_frame(page)
+        frame.get_by_role("button", name="Try the offline statement demo").click()
+        expect(frame.get_by_text("Original cash and all share quantities match the closing statement.")).to_be_visible()
+        expect(frame.get_by_text("+21.00 USD", exact=True)).to_be_visible()
+        print("Offline statement matched; skipped sale changed closing equity by +21.00 USD.", flush=True)
+        frame.get_by_text("Transaction log", exact=True).click()
         cash = table([("2024-03-04", "Initial", "", "", ""),
                       ("2024-03-05", "Deposit", "", "", ""),
                       ("2024-03-06", "Fee", "", "", "")])

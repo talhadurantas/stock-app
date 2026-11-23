@@ -3,12 +3,11 @@
 import numpy as np
 import pandas as pd
 
-from portfolio import SESSIONS_PER_YEAR
+from transactions import PortfolioError, SESSIONS_PER_YEAR
 
 
-RISK_FREE_RATE = 0.02
 PERCENT_METRICS = {
-    "Total return", "CAGR", "Annual volatility", "Max drawdown", "Win rate",
+    "Tracking error", "Total return", "CAGR", "Annual volatility", "Max drawdown", "Win rate",
     "Best day", "Worst day", "5% return quantile", "1% return quantile",
     "Expected shortfall (5%)", "Expected shortfall (1%)",
 }
@@ -32,7 +31,30 @@ def daily_returns(values, opening=None):
     return changes
 
 
-def stats(values, opening=None):
+def daily_hurdle(annual_rate):
+    if not np.isfinite(annual_rate) or annual_rate <= -1:
+        raise PortfolioError("The annual risk-free rate must be finite and above −100%.")
+    return np.expm1(np.log1p(annual_rate) / SESSIONS_PER_YEAR)
+
+
+def active_returns(values, benchmark, opening=None):
+    paired = pd.concat([values.rename("strategy"), benchmark.rename("benchmark")], axis=1, join="inner").dropna()
+    if paired.empty:
+        return pd.Series(dtype=float, index=paired.index)
+    changes = paired.pct_change(fill_method=None)
+    if opening is not None and not np.allclose(paired.iloc[0], opening, rtol=1e-12, atol=0):
+        changes.iloc[0] = paired.iloc[0] / opening - 1
+    return changes.strategy - changes.benchmark
+
+
+def benchmark_stats(values, benchmark, opening=None):
+    active = active_returns(values, benchmark, opening).dropna()
+    tracking = active.std() * np.sqrt(SESSIONS_PER_YEAR) if len(active) >= 2 else np.nan
+    ratio = active.mean() * SESSIONS_PER_YEAR / tracking if tracking > 1e-12 else np.nan
+    return pd.Series({"Tracking error": tracking, "Information ratio": ratio})
+
+
+def stats(values, opening=None, *, risk_free_rate=0.0):
     returns = daily_returns(values, opening).dropna()
     total = values.iloc[-1] / (values.iloc[0] if opening is None else opening) - 1
     days = (values.index[-1] - values.index[0]).days
@@ -41,7 +63,7 @@ def stats(values, opening=None):
     cagr = cagr if np.isfinite(cagr) else np.nan
     declines, _, _ = drawdown(values, opening)
     max_dd = declines.min()
-    rf_daily = (1 + RISK_FREE_RATE) ** (1 / SESSIONS_PER_YEAR) - 1
+    rf_daily = daily_hurdle(risk_free_rate)
     excess = returns - rf_daily
     vol = returns.std() * np.sqrt(SESSIONS_PER_YEAR)
     annual_excess = excess.mean() * SESSIONS_PER_YEAR
@@ -65,11 +87,11 @@ def monthly_returns(values, opening=None):
     return (1 + daily).resample("ME").prod(min_count=1).dropna() - 1
 
 
-def rolling_metrics(values):
+def rolling_metrics(values, *, risk_free_rate=0.0):
     n = SESSIONS_PER_YEAR
     daily = values.pct_change(fill_method=None)
     vol = daily.rolling(n).std() * np.sqrt(n)
-    rf_daily = (1 + RISK_FREE_RATE) ** (1 / n) - 1
+    rf_daily = daily_hurdle(risk_free_rate)
     sharpe = (daily - rf_daily).rolling(n).mean() * n / vol.where(vol > 0)
     return pd.DataFrame({
         "Return": values.pct_change(n, fill_method=None),

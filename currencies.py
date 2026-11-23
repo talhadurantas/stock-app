@@ -60,10 +60,10 @@ def valuation_prices(prices, tickers, bench, calendar, currencies):
     """Carry native holding marks and FX independently. Orders require native execution quotes."""
     source = prices.reindex(columns=tickers)
     raw = source.reindex(calendar).copy()
-    marks = source.ffill().reindex(calendar).copy()
+    marks = source.ffill().reindex(calendar, method="ffill").copy()
     rate = pd.Series(1.0, index=calendar)
     if currencies.needs_fx([*tickers, bench]):
-        rate = prices.reindex(columns=[FX_TICKER])[FX_TICKER].ffill().reindex(calendar)
+        rate = prices.reindex(columns=[FX_TICKER])[FX_TICKER].ffill().reindex(calendar, method="ffill")
         if rate.isna().any() and (currencies.account != currencies.report or currencies.quote(bench) != currencies.report):
             day = rate.index[rate.isna()][0].date()
             raise MissingQuotes((FX_TICKER,), f"No USD/TRY rate on or before {day}.")
@@ -72,5 +72,5 @@ def valuation_prices(prices, tickers, bench, calendar, currencies):
         raw[ticker] *= factor
         marks[ticker] *= factor
     report_fx = pd.Series(exchange_factor(currencies.account, currencies.report, rate), index=calendar)
-    benchmark = prices.loc[calendar, bench] * exchange_factor(currencies.quote(bench), currencies.report, rate)
+    benchmark = prices[bench].ffill().reindex(calendar, method="ffill") * exchange_factor(currencies.quote(bench), currencies.report, rate)
     return raw, marks, report_fx, benchmark, rate

@@ -61,7 +61,10 @@ def analyze_scenarios(trades, scenario, benchmark, start, end, cash_rate, initia
     tickers = tuple(sorted(tickers))
     funding = trades[0].date
     fetch_from = (funding - pd.Timedelta(days=30)).date()
-    settings = dict(initial_cash=initial_cash, currencies=currencies, funding_date=funding)
+    shared = {ticker for trade in [*trades, *(scenario or [])] if trade.date <= pd.Timestamp(end)
+              for ticker in (*trade.sells, *trade.buys)}
+    settings = dict(initial_cash=initial_cash, currencies=currencies, funding_date=funding,
+                    valuation_symbols=shared)
     prices = pd.DataFrame()
     retried = set()
     while True:
