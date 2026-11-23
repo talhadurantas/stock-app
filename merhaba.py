@@ -135,10 +135,10 @@ def scenario_editor(original):
     return draft
 
 
-def restore_project():
+def restore_project(filename, content):
     state = st.session_state
     try:
-        original, alternate, settings = read_project(state.project_file.getvalue())
+        original, alternate, settings = read_project(content)
     except PortfolioError as exc:
         state.project_error = str(exc)
         return
@@ -154,13 +154,17 @@ def restore_project():
     state.scenario_was_open = alternate is not None
     state.pop("analysis", None)
     state.pop("project_error", None)
-    state.editor_message = "Opened the saved comparison. Run analysis to replay it."
+    state.last_opened_project = filename
 
 
 def project_controls(original, alternate, settings):
-    with st.expander("Save or open a comparison"):
+    with st.expander("Save and reopen comparisons"):
         uploaded = st.file_uploader("Saved comparison JSON", type=["json"], key="project_file")
-        st.button("Open saved comparison", disabled=uploaded is None, on_click=restore_project, key="open_project")
+        filename, content = (uploaded.name, uploaded.getvalue()) if uploaded is not None else ("", b"")
+        st.button(f"Open {filename}" if filename else "Open saved comparison", disabled=not filename,
+                  on_click=restore_project, args=(filename, content), key="open_project")
+        if "last_opened_project" in st.session_state:
+            st.caption(f"Last opened {st.session_state.last_opened_project}")
         if "project_error" in st.session_state:
             st.error(st.session_state.project_error)
         if alternate is not None:

@@ -21,7 +21,7 @@ Turn on **Compare a what-if scenario**. The app copies the current log. Check **
 
 Choose **Run analysis**. Both versions use one quote snapshot, starting balance, funding date, benchmark calendar and currency settings. A sale of an unheld position identifies the scenario row and leaves the original results visible. A scenario with all rows skipped holds its starting cash. Switch the growth chart to a logarithmic scale in the sidebar or hover over trade markers for the orders and remaining cash.
 
-Use **Save or open a comparison** to download both editable logs, skipped rows and financial settings as one JSON file. Open that file to resume in another session and run the analysis against available quotes. Daily CSVs and reports preserve results for a particular run.
+Use **Save and reopen comparisons** to download both editable logs, skipped rows and financial settings as one JSON file. Open that file to resume in another session and run the analysis against available quotes. Daily CSVs and reports preserve results for a particular run.
 
 ## Use your existing transaction CSV
 
