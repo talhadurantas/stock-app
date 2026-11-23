@@ -119,7 +119,7 @@ class AccountingTests(unittest.TestCase):
     def test_fx_uses_only_rates_known_at_the_close_and_respects_overrides(self):
         rows = [("2024-03-04","Initial","","XYZ","")]
         config = currency_settings("USD","USD","XYZ=TRY")
-        with self.assertRaisesRegex(PortfolioError, "No USD/TRY rate on or before 2024-03-04"):
+        with self.assertRaisesRegex(PortfolioError, "(?i)no USD/TRY rate on or before 2024-03-04"):
             run(rows, {"XYZ":[100,110],FX_TICKER:[np.nan,10]}, currencies=config)
         r = run(rows, {"XYZ":[100,110,110],FX_TICKER:[10,np.nan,11]}, currencies=config)
         np.testing.assert_allclose(r.ledger.Portfolio,[100,110,100])

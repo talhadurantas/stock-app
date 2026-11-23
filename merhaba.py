@@ -251,6 +251,14 @@ def risk_charts(result, bench, compare_rolling):
         st.caption("The 5% and 1% return quantiles and the corresponding average tail returns appear in Detailed statistics.")
 
 
+def transaction_table(view):
+    events = view.executions.drop(columns=["Sold", "Bought", "Cash after"]).rename(columns={
+        "Account sold": "Sold", "Account bought": "Bought", "Account cash after": "Cash after",
+    })
+    events = events.assign(Requested=events["Requested"].dt.date, Executed=events["Executed"].dt.date)
+    st.dataframe(events.round(3), hide_index=True)
+
+
 def show_results(result, alternative, scenario_error, bench, cash_rate, markers, shade, compare_rolling, logarithmic, draft):
     ledger = result.ledger
     first, last = ledger.index[0].date(), ledger.index[-1].date()
@@ -324,18 +332,15 @@ def show_results(result, alternative, scenario_error, bench, cash_rate, markers,
         allocation["Closing value"] *= result.account["Balance"].iloc[-1] / ledger["Portfolio"].iloc[-1]
         st.markdown(f"**Closing positions on {last:%d %b %Y}**")
         st.dataframe(allocation.round(3), hide_index=True)
-        st.markdown("**Executed transactions in the selected window**")
+        st.markdown(f"**Executed transactions in the selected window ({result.currency})**")
         if result.executions.empty:
             st.caption("Positions carried in from earlier transactions.")
         else:
-            events = result.executions.copy()
-            events["Requested"] = events["Requested"].dt.date
-            events["Executed"] = events["Executed"].dt.date
-            st.dataframe(events.round(3), hide_index=True)
+            transaction_table(result)
         if alternative is not None:
             st.markdown("**Scenario transactions**")
             if not alternative.executions.empty:
-                st.dataframe(alternative.executions.round(3), hide_index=True)
+                transaction_table(alternative)
             if not alternative.no_orders.empty:
                 show_no_orders(alternative.no_orders)
             if alternative.pending:
@@ -343,7 +348,11 @@ def show_results(result, alternative, scenario_error, bench, cash_rate, markers,
             if alternative.carried:
                 st.caption(f"Scenario positions using previous closes (sessions): {alternative.carried}")
         cash_weight = result.account["Cash"].div(result.account["Balance"].replace(0, np.nan))
-        st.caption(f"Average session-end allocation: {1-cash_weight.mean():.1%} invested and {cash_weight.mean():.1%} cash.")
+        average_cash = cash_weight.mean()
+        if np.isfinite(average_cash):
+            st.caption(f"Average funded session: {1-average_cash:.1%} invested and {average_cash:.1%} cash.")
+        else:
+            st.caption("The account held no capital during this window.")
     with st.expander("Detailed statistics"):
         st.dataframe(pretty)
         for name in strategies:
@@ -379,7 +388,7 @@ def show_results(result, alternative, scenario_error, bench, cash_rate, markers,
             *(["Scenario error: " + scenario_error] if scenario_error else []),
             "Buy and hold keeps the positions and cash left by the first transaction.",
             f"Portfolio minus benchmark: {spread * 100:+.2f} percentage points.",
-            f"Average cash allocation: {cash_weight.mean():.2%}", "", pretty.to_string(),
+            "Average cash allocation: " + (f"{average_cash:.2%}" if np.isfinite(average_cash) else "No funded sessions"), "", pretty.to_string(),
             "", "Executed transactions in the reporting window",
             result.executions.to_string(index=False) if not result.executions.empty else "None in the window.",
             "", "Transactions that placed no orders (including earlier rows replayed for the opening holdings)",
